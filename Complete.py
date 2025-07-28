@@ -1,5 +1,5 @@
 # app.py
-from flask import Flask, request, render_template_string, jsonify, session
+from flask import Flask, request, render_template_string, jsonify, send_from_directory
 import os
 import requests
 import json
@@ -10,30 +10,30 @@ from dotenv import load_dotenv
 load_dotenv()
 
 app = Flask(__name__)
-# A secret key is needed for session management in Flask
-app.secret_key = os.urandom(24)
 
 # --- API Keys Configuration ---
-# It's recommended to load this from an environment variable
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "YOUR_GEMINI_API_KEY_HERE")
+# Unsplash is no longer needed for this version
 # -----------------------------
+
+# Directory for storing generated website files for download
+BASE_DIR = os.path.abspath(os.path.dirname(__file__))
+WEBSITE_DIR = os.path.join(BASE_DIR, 'websites')
+if not os.path.exists(WEBSITE_DIR):
+    os.makedirs(WEBSITE_DIR)
 
 # --- Helper function for exponential backoff ---
 def api_call_with_backoff(url, headers, payload, max_retries=5, initial_delay=1):
-    """
-    Makes an API call with exponential backoff for handling transient errors.
-    """
     for i in range(max_retries):
         try:
-            # Increased timeout for potentially long generations
-            response = requests.post(url, headers=headers, data=json.dumps(payload), timeout=300)
+            response = requests.post(url, headers=headers, data=json.dumps(payload), timeout=300) # Increased timeout for larger generation
             if not response.ok:
                 print(f"--- API Error Response ---")
                 print(f"Status Code: {response.status_code}")
                 try: print(f"Response JSON: {response.json()}")
                 except json.JSONDecodeError: print(f"Response Text: {response.text}")
                 print(f"--------------------------")
-            response.raise_for_status() # Raises an HTTPError for bad responses (4xx or 5xx)
+            response.raise_for_status()
             return response.json()
         except requests.exceptions.HTTPError as e:
             print(f"API call failed with HTTPError (retry {i+1}/{max_retries}): {e}")
@@ -46,393 +46,476 @@ def api_call_with_backoff(url, headers, payload, max_retries=5, initial_delay=1)
 
 @app.route('/')
 def index():
-    """Renders the main page to get the user's website topic."""
-    # This HTML is the same as your original, just with updated text for clarity
     return render_template_string('''
         <!DOCTYPE html>
-        <html lang="en">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>AI Website Generator</title>
-            <script src="https://cdn.tailwindcss.com"></script>
-            <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
-            <style>
-                body { font-family: 'Inter', sans-serif; background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); color: #e2e8f0; }
-                .container { background: rgba(30, 41, 59, 0.85); backdrop-filter: blur(15px); }
-                .title-glow { background: linear-gradient(135deg, #38bdf8, #a78bfa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-                .loading-spinner { border-top-color: #38bdf8; }
-                button:disabled { background: #475569; }
-            </style>
-        </head>
-        <body class="flex items-center justify-center min-h-screen p-4">
-            <div class="container max-w-2xl w-full p-8 rounded-2xl shadow-2xl border border-slate-700 text-center">
-                <h1 class="text-4xl md:text-5xl font-bold title-glow">AI Website Generator</h1>
-                <p class="text-slate-300 mt-4 mb-8">Tell me what your website is about, and I'll create a professional design for you.</p>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Website Generator</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        /* All CSS from the original file remains the same, as it provides a great UI foundation */
+        * { box-sizing: border-box; }
+        body { font-family: 'Inter', sans-serif; background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #334155 100%); color: #e2e8f0; min-height: 100vh; margin: 0; padding: 0; overflow-x: hidden; position: relative; display: flex; align-items: center; justify-content: center; }
+        .bg-animation { position: fixed; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 1; will-change: transform; }
+        .floating-orb { position: absolute; border-radius: 50%; background: radial-gradient(circle, rgba(99, 179, 237, 0.4) 0%, rgba(139, 92, 246, 0.2) 70%, transparent 100%); animation: float 8s ease-in-out infinite; will-change: transform; backface-visibility: hidden; }
+        .floating-orb:nth-child(1) { width: clamp(60px, 8vw, 120px); height: clamp(60px, 8vw, 120px); top: 15%; left: 10%; animation-delay: 0s; }
+        .floating-orb:nth-child(2) { width: clamp(40px, 6vw, 80px); height: clamp(40px, 6vw, 80px); top: 60%; right: 15%; animation-delay: 2s; }
+        .floating-orb:nth-child(3) { width: clamp(80px, 10vw, 150px); height: clamp(80px, 10vw, 150px); bottom: 15%; left: 20%; animation-delay: 4s; }
+        .floating-orb:nth-child(4) { width: clamp(30px, 4vw, 60px); height: clamp(30px, 4vw, 60px); top: 30%; right: 30%; animation-delay: 1s; }
+        @keyframes float { 0%, 100% { transform: translateY(0px) translateX(0px) scale(1); opacity: 0.6; } 50% { transform: translateY(-15px) translateX(10px) scale(1.05); opacity: 0.8; } }
+        .grid-pattern { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-image: linear-gradient(rgba(99, 179, 237, 0.08) 1px, transparent 1px), linear-gradient(90deg, rgba(99, 179, 237, 0.08) 1px, transparent 1px); background-size: clamp(30px, 5vw, 50px) clamp(30px, 5vw, 50px); animation: gridMove 25s linear infinite; z-index: 1; will-change: transform; }
+        @keyframes gridMove { 0% { transform: translate(0, 0); } 100% { transform: translate(50px, 50px); } }
+        .container { max-width: min(90vw, 750px); margin: clamp(20px, 5vh, 50px) auto; padding: clamp(1.5rem, 4vw, 3rem); background: rgba(30, 41, 59, 0.95); backdrop-filter: blur(20px); border: 1px solid rgba(99, 179, 237, 0.3); border-radius: clamp(1rem, 2vw, 1.5rem); box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(99, 179, 237, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.1); position: relative; z-index: 10; transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1); display: flex; flex-direction: column; align-items: center; justify-content: center; }
+        @media (hover: hover) { .container:hover { transform: translateY(-3px); } }
+        /* MODIFIED FOR TEXTAREA */
+        textarea { width: 100%; padding: clamp(0.75rem, 3vw, 1rem) clamp(1rem, 4vw, 1.5rem); border-radius: clamp(0.5rem, 2vw, 0.75rem); border: 2px solid rgba(71, 85, 105, 0.4); background: rgba(51, 65, 85, 0.9); backdrop-filter: blur(10px); color: #e2e8f0; transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); font-size: clamp(1rem, 3vw, 1.1rem); line-height: 1.5; -webkit-appearance: none; appearance: none; min-height: 120px; resize: vertical; }
+        textarea:focus { border-color: #63b3ed; box-shadow: 0 0 0 3px rgba(99, 179, 237, 0.25), 0 8px 25px rgba(99, 179, 237, 0.15); outline: none; transform: translateY(-1px); }
+        button { background: linear-gradient(135deg, #63b3ed, #90cdf4); color: #1a202c; padding: clamp(0.75rem, 3vw, 1rem) clamp(1.5rem, 5vw, 2.5rem); border-radius: clamp(0.75rem, 2vw, 1rem); font-weight: 600; cursor: pointer; border: none; transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); font-size: clamp(1rem, 3vw, 1.1rem); position: relative; overflow: hidden; box-shadow: 0 8px 25px rgba(99, 179, 237, 0.3); min-height: 48px; display: inline-flex; align-items: center; justify-content: center; white-space: nowrap; }
+        #submitBtn { width: 320px !important; max-width: 100%; margin: 0 auto; display: block; font-size: 1.15rem; }
+        @media (hover: hover) { button:hover:not(:disabled) { background: linear-gradient(135deg, #90cdf4, #bee3f8); transform: translateY(-2px); box-shadow: 0 12px 35px rgba(99, 179, 237, 0.4); } }
+        button:active:not(:disabled) { transform: translateY(0); transition: transform 0.1s; }
+        button:disabled { background: linear-gradient(135deg, #4a5568, #2d3748); cursor: not-allowed; color: #a0aec0; transform: none; }
+        .loading-spinner { border: 3px solid rgba(99, 179, 237, 0.3); border-top: 3px solid #63b3ed; border-radius: 50%; width: clamp(28px, 5vw, 35px); height: clamp(28px, 5vw, 35px); animation: spin 1s linear infinite; display: none; margin-left: clamp(0.75rem, 3vw, 1.5rem); flex-shrink: 0; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .title-glow { background: linear-gradient(135deg, #63b3ed, #a78bfa, #f093fb); background-size: 200% 200%; -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; animation: gradientShift 4s ease infinite; font-size: clamp(2rem, 8vw, 3rem); line-height: 1.2; margin-bottom: clamp(1rem, 4vw, 1.5rem); }
+        @keyframes gradientShift { 0%, 100% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } }
+        .form-group { position: relative; margin-bottom: clamp(1.5rem, 4vw, 2rem); }
+        .description-text { font-size: clamp(1rem, 3vw, 1.125rem); line-height: 1.6; margin-bottom: clamp(2rem, 5vw, 2.5rem); }
+        .label-text { font-size: clamp(1rem, 3vw, 1.125rem); margin-bottom: clamp(0.75rem, 2vw, 1rem); }
+        .button-container { display: flex; align-items: center; justify-content: center; flex-wrap: nowrap; gap: clamp(0.75rem, 3vw, 1.5rem); margin-top: clamp(1.5rem, 4vw, 2rem); }
+        /* Fade-in animation */
+        .fade-in { animation: fadeIn 0.8s cubic-bezier(0.4, 0, 0.2, 1) forwards; opacity: 0; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+    </style>
+</head>
+<body>
+    <div class="bg-animation">
+        <div class="grid-pattern"></div>
+        <div class="floating-orb"></div><div class="floating-orb"></div><div class="floating-orb"></div><div class="floating-orb"></div>
+    </div>
 
-                <form id="topicForm" onsubmit="submitTopic(event)">
-                    <label for="topic" class="sr-only">Website Topic</label>
-                    <input type="text" id="topic" name="topic" placeholder="e.g., A personal portfolio for a photographer" required
-                           class="w-full p-4 rounded-lg bg-slate-800 border-2 border-slate-600 focus:border-sky-500 focus:ring-sky-500 focus:outline-none transition text-lg">
-
-                    <div class="mt-6 flex justify-center items-center">
-                        <button type="submit" id="submitBtn" class="bg-sky-600 hover:bg-sky-700 text-white font-bold py-3 px-8 rounded-lg text-lg transition-transform transform hover:scale-105">
-                            Suggest Pages
-                        </button>
-                        <div id="loadingSpinner" class="loading-spinner ml-4 w-8 h-8 border-4 rounded-full animate-spin" style="display: none;"></div>
-                    </div>
-                </form>
+    <div class="container text-center fade-in">
+        <h1 class="title-glow font-bold">🌐 AI Website Generator</h1>
+        <p class="description-text text-gray-300">Describe the website you want to create, and let AI build a foundation for you.</p>
+        
+        <form id="descriptionForm" onsubmit="submitDescription(event)" novalidate>
+            <div class="text-left">
+                <label for="description" class="label-text text-gray-200 block font-semibold">Describe your ideal website:</label>
+                <div class="form-group">
+                    <textarea 
+                        id="description" 
+                        name="description" 
+                        placeholder="e.g., A modern portfolio for a photographer named Jane Doe, with a gallery, an about page, and a contact form." 
+                        required
+                        autocomplete="off"
+                        spellcheck="true"
+                    ></textarea>
+                </div>
             </div>
+            <div class="button-container">
+                <button type="submit" id="submitBtn" aria-describedby="loading-status">
+                    Plan Website Pages
+                </button>
+                <div id="loadingSpinner" class="loading-spinner" role="status" aria-label="Loading"></div>
+            </div>
+            <div id="loading-status" class="sr-only" aria-live="polite"></div>
+        </form>
+    </div>
 
-            <script>
-                async function submitTopic(event) {
-                    event.preventDefault();
-                    const btn = document.getElementById('submitBtn');
-                    const spinner = document.getElementById('loadingSpinner');
-                    const topic = document.getElementById('topic').value;
+    <script>
+        // Form validation
+        function validateInput(description) {
+            if (!description || description.trim().length < 10) {
+                return 'Please provide a more detailed description (at least 10 characters).';
+            }
+            if (description.trim().length > 1000) {
+                return 'Description is too long. Please keep it under 1000 characters.';
+            }
+            return null;
+        }
 
-                    if (topic.trim().length < 5) {
-                        alert('Please provide a more detailed topic.');
-                        return;
-                    }
-
-                    btn.disabled = true;
-                    btn.textContent = 'Analyzing...';
-                    spinner.style.display = 'block';
-
-                    try {
-                        const res = await fetch('/suggest_pages', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ topic: topic.trim() })
-                        });
-
-                        if (!res.ok) {
-                            const err = await res.json();
-                            throw new Error(err.error?.message || `Server error: ${res.status}`);
-                        }
-
-                        const data = await res.json();
-                        window.location.href = `/manage_pages?topic=${encodeURIComponent(topic)}&pages=${data.pages.map(p => encodeURIComponent(p)).join(',')}`;
-                    } catch (error) {
-                        console.error('Submission error:', error);
-                        alert('Failed to suggest pages. Please check the console and try again. ' + error.message);
-                        btn.disabled = false;
-                        btn.textContent = 'Suggest Pages';
-                        spinner.style.display = 'none';
-                    }
+        async function submitDescription(event) {
+            event.preventDefault();
+            
+            const btn = document.getElementById('submitBtn');
+            const spinner = document.getElementById('loadingSpinner');
+            const description = document.getElementById('description').value;
+            const statusElement = document.getElementById('loading-status');
+            
+            const validationError = validateInput(description);
+            if (validationError) {
+                alert(validationError);
+                return;
+            }
+            
+            btn.disabled = true;
+            btn.innerHTML = 'Planning...';
+            spinner.style.display = 'inline-block';
+            statusElement.textContent = 'Generating website page ideas...';
+            
+            try {
+                const res = await fetch('/suggest_pages', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ description: description.trim() })
+                });
+                
+                if (!res.ok) {
+                    const err = await res.json();
+                    throw new Error(err.error?.message || `Server error: ${res.status}`);
                 }
-            </script>
-        </body>
-        </html>
-    ''')
+                
+                const data = await res.json();
+                
+                if (!data.pages || !Array.isArray(data.pages)) {
+                    throw new Error('Invalid response format from server.');
+                }
+
+                // Store description and pages for the next step
+                sessionStorage.setItem('websiteDescription', description.trim());
+                sessionStorage.setItem('websitePages', JSON.stringify(data.pages));
+                
+                // Redirect to the page management view
+                window.location.href = `/manage_pages`;
+                
+            } catch (error) {
+                console.error('Submission error:', error);
+                alert('Failed to generate page ideas. ' + error.message);
+                
+                // Reset UI state
+                btn.disabled = false;
+                btn.innerHTML = '✨ Plan Website Pages';
+                spinner.style.display = 'none';
+                statusElement.textContent = '';
+            }
+        }
+    </script>
+</body>
+</html>''')
 
 @app.route('/suggest_pages', methods=['POST'])
 def suggest_pages():
-    """Suggests website pages based on the user's topic."""
     data = request.get_json()
-    main_topic = data.get('topic')
-    if not main_topic:
-        return jsonify({"error": "No topic provided"}), 400
-
-    prompt = f'For a website about "{main_topic}", suggest 5 essential pages. Common pages include "Home", "About", "Services", "Portfolio", "Blog", "Contact". Return as a simple comma-separated list. Exclude any explanation. Example: Home, About Us, Our Work, Testimonials, Contact'
+    if not (description := data.get('description')): 
+        return jsonify({"error": "No description provided"}), 400
+    
+    prompt = f'For a website described as "{description}", suggest 4 to 6 essential page names. Examples: Home, About Us, Services, Portfolio, Blog, Contact. Return as a simple comma-separated list. Exclude any numbering or extra text.'
     api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key={GEMINI_API_KEY}"
-    payload = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.6}}
-
+    payload = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.5}}
+    
     try:
         result = api_call_with_backoff(api_url, {'Content-Type': 'application/json'}, payload)
         text_response = result['candidates'][0]['content']['parts'][0]['text']
         pages = [p.strip() for p in text_response.strip().split(',') if p.strip()]
-        return jsonify({"pages": pages})
+        
+        # Ensure there are at least a few default pages
+        if not pages or len(pages) < 2:
+            pages = ["Home", "About", "Contact"]
+            
+        return jsonify({"pages": pages[:8]}) # Limit to 8 pages max initially
     except Exception as e:
-        print(f"Error calling Gemini API: {e}")
         return jsonify({"error": {"message": f"Failed to call Gemini API: {e}"}}), 500
 
 @app.route('/manage_pages')
 def manage_pages():
-    """Allows the user to edit, reorder, add, or delete the suggested pages."""
-    topic = request.args.get('topic', 'My Website')
-    pages = [p for p in request.args.get('pages', '').split(',') if p]
+    # This page will now get its data from sessionStorage on the client-side
     return render_template_string('''
         <!DOCTYPE html>
-        <html lang="en">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Manage Website Pages</title>
-            <script src="https://cdn.tailwindcss.com"></script>
-            <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
-            <style>
-                body { font-family: 'Inter', sans-serif; background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); color: #e2e8f0; }
-                .container { background: rgba(30, 41, 59, 0.85); backdrop-filter: blur(15px); }
-                .title-glow { background: linear-gradient(135deg, #38bdf8, #a78bfa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-                li { cursor: grab; }
-                li:active { cursor: grabbing; }
-                .ghost { opacity: 0.5; background: #475569; }
-                #generateFinalBtn:disabled { background: #475569; }
-            </style>
-        </head>
-        <body class="flex items-center justify-center min-h-screen p-4">
-            <div class="container max-w-3xl w-full p-8 rounded-2xl shadow-2xl border border-slate-700">
-                <h1 class="text-3xl font-bold title-glow text-center">Finalize Your Website Pages</h1>
-                <p class="text-slate-300 mt-2 mb-6 text-center">Drag to reorder, edit, add, or delete pages.</p>
-                <ul id="pageList" class="space-y-3 mb-6"></ul>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Manage Website Pages</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        /* Reusing the exact same CSS from the original manage_presentation page */
+        * { box-sizing: border-box; }
+        body { font-family: 'Inter', sans-serif; background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #334155 100%); color: #e2e8f0; min-height: 100vh; margin: 0; padding: 0; overflow-x: hidden; position: relative; }
+        .bg-animation { position: fixed; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 1; will-change: transform; }
+        .floating-orb { position: absolute; border-radius: 50%; background: radial-gradient(circle, rgba(99, 179, 237, 0.4) 0%, rgba(139, 92, 246, 0.2) 70%, transparent 100%); animation: float 8s ease-in-out infinite; will-change: transform; backface-visibility: hidden; }
+        .floating-orb:nth-child(1) { width: clamp(60px, 8vw, 120px); height: clamp(60px, 8vw, 120px); top: 15%; left: 10%; animation-delay: 0s; }
+        .floating-orb:nth-child(2) { width: clamp(40px, 6vw, 80px); height: clamp(40px, 6vw, 80px); top: 60%; right: 15%; animation-delay: 2s; }
+        .main-container { max-width: min(90vw, 800px); margin: clamp(20px, 5vh, 50px) auto; padding: clamp(1.5rem, 4vw, 2.5rem); background: rgba(30, 41, 59, 0.95); backdrop-filter: blur(20px); border: 1px solid rgba(99, 179, 237, 0.3); border-radius: clamp(1rem, 2vw, 1.5rem); box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(99, 179, 237, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.1); position: relative; z-index: 10; transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1); }
+        .title-glow { background: linear-gradient(135deg, #63b3ed, #a78bfa, #f093fb); background-size: 200% 200%; -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; animation: gradientShift 4s ease infinite; font-size: clamp(1.5rem, 5vw, 2rem); line-height: 1.2; margin-bottom: clamp(1rem, 3vw, 1.5rem); }
+        @keyframes gradientShift { 0%, 100% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } }
+        .subtitle { font-size: clamp(0.875rem, 2.5vw, 1rem); line-height: 1.6; margin-bottom: clamp(1.5rem, 4vw, 2rem); color: #94a3b8; }
+        #pageList li { display: flex; align-items: center; padding: clamp(0.75rem, 3vw, 1rem); margin: clamp(0.5rem, 2vw, 0.75rem) 0; border-radius: clamp(0.5rem, 2vw, 0.75rem); background: rgba(51, 65, 85, 0.8); backdrop-filter: blur(10px); border: 1px solid rgba(71, 85, 105, 0.4); box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2); cursor: grab; transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); position: relative; overflow: hidden; }
+        #pageList li.opacity-50 { opacity: 0.5; }
+        #pageList li input { background: transparent; flex-grow: 1; outline: none; width: 100%; color: #e2e8f0; font-size: clamp(0.875rem, 2.5vw, 1rem); border: none; padding: clamp(0.25rem, 1vw, 0.5rem); }
+        #pageList li button { background: linear-gradient(135deg, #ef4444, #dc2626); color: white; font-weight: bold; width: clamp(1.75rem, 4vw, 2rem); height: clamp(1.75rem, 4vw, 2rem); border-radius: 50%; margin-left: clamp(0.75rem, 3vw, 1rem); border: none; cursor: pointer; transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); display: flex; align-items: center; justify-content: center; }
+        .add-section { display: flex; align-items: center; gap: clamp(0.75rem, 3vw, 1rem); margin-top: clamp(1.5rem, 4vw, 2rem); flex-wrap: wrap; }
+        #newPageInput { flex-grow: 1; min-width: 200px; background: rgba(51, 65, 85, 0.9); padding: clamp(0.75rem, 3vw, 1rem); border-radius: clamp(0.5rem, 2vw, 0.75rem); border: 2px solid rgba(71, 85, 105, 0.4); color: #e2e8f0; font-size: clamp(0.875rem, 2.5vw, 1rem); transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); outline: none; }
+        .add-button { background: linear-gradient(135deg, #10b981, #059669); color: white; font-weight: 600; padding: clamp(0.75rem, 3vw, 1rem) clamp(1.25rem, 4vw, 1.5rem); border-radius: clamp(0.5rem, 2vw, 0.75rem); border: none; cursor: pointer; transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); font-size: clamp(0.875rem, 2.5vw, 1rem); }
+        .final-button-section { text-align: center; margin-top: clamp(2rem, 6vw, 3rem); }
+        #generateFinalBtn { background: linear-gradient(135deg, #2563eb, #1d4ed8); color: white; font-weight: bold; padding: clamp(0.75rem, 3vw, 1rem) clamp(1.5rem, 5vw, 2rem); border-radius: clamp(0.75rem, 2vw, 1rem); border: none; cursor: pointer; transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); font-size: clamp(1rem, 3vw, 1.125rem); }
+        #loadingSpinner { border: 4px solid rgba(37, 99, 235, 0.3); border-top: 4px solid #2563eb; border-radius: 50%; width: clamp(28px, 5vw, 32px); height: clamp(28px, 5vw, 32px); animation: spin 1s linear infinite; margin: clamp(1rem, 3vw, 1.5rem) auto 0; filter: drop-shadow(0 0 10px rgba(37, 99, 235, 0.5)); }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .fade-in { animation: fadeIn 0.8s cubic-bezier(0.4, 0, 0.2, 1) forwards; opacity: 0; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+    </style>
+</head>
+<body class="p-4 md:p-8">
+    <div class="bg-animation">
+        <div class="floating-orb"></div><div class="floating-orb"></div>
+    </div>
 
-                <div class="flex gap-4 mt-4">
-                    <input type="text" id="newPageInput" placeholder="Add a new page (e.g., FAQ)" class="flex-grow p-3 rounded-lg bg-slate-800 border-2 border-slate-600 focus:border-sky-500 focus:ring-sky-500 focus:outline-none">
-                    <button onclick="addPage()" class="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-5 rounded-lg transition">Add</button>
-                </div>
+    <div class="main-container fade-in">
+        <h1 class="title-glow font-bold text-center">✏️ Review Your Website Pages</h1>
+        <p class="text-center subtitle">Drag to reorder, edit, add, or delete pages. This will define your website's navigation and structure.</p>
+        
+        <ul id="pageList" class="mb-6 space-y-3"></ul>
+        
+        <div class="add-section">
+            <input type="text" id="newPageInput" placeholder="Add a new page name" autocomplete="off">
+            <button onclick="addPage()" class="add-button">Add Page</button>
+        </div>
+        
+        <div class="final-button-section">
+            <button id="generateFinalBtn" onclick="generateFinalWebsite()">🚀 Build My Website</button>
+            <div id="loadingSpinner" style="display:none;"></div>
+        </div>
+    </div>
 
-                <div class="mt-8 text-center">
-                    <button id="generateFinalBtn" onclick="generateWebsite()" class="bg-sky-600 hover:bg-sky-700 text-white font-bold py-3 px-8 rounded-lg text-lg transition-transform transform hover:scale-105">
-                        ✨ Generate My Website
-                    </button>
-                    <div id="loadingSpinner" class="mt-4 mx-auto w-8 h-8 border-4 border-slate-600 border-t-sky-500 rounded-full animate-spin" style="display: none;"></div>
-                </div>
-            </div>
+    <script>
+        let pages = [];
+        let description = '';
+        const list = document.getElementById('pageList');
 
-            <script>
-                let pages = {{ pages | tojson | safe }};
-                const mainTopic = "{{ topic }}";
-                const list = document.getElementById('pageList');
-                let draggedItem = null;
+        document.addEventListener('DOMContentLoaded', () => {
+            description = sessionStorage.getItem('websiteDescription');
+            const storedPages = sessionStorage.getItem('websitePages');
+            if (!description || !storedPages) {
+                alert("No website data found. Please start over.");
+                window.location.href = '/';
+                return;
+            }
+            pages = JSON.parse(storedPages);
+            renderPages();
+        });
+        
+        function renderPages() {
+            list.innerHTML = pages.map((page, i) => `
+                <li class="flex items-center p-3 my-2 rounded-lg bg-slate-700 shadow-md cursor-grab" draggable="true" data-index="${i}">
+                    <span class="text-slate-400 mr-4 font-bold">${i + 1}.</span>
+                    <input value="${page.replace(/"/g, '&quot;')}" onchange="updatePage(${i}, this.value)" class="bg-transparent flex-grow focus:outline-none w-full">
+                    <button onclick="deletePage(${i})" class="bg-red-500 text-white font-bold w-8 h-8 rounded-full ml-4 hover:bg-red-600 transition-colors">X</button>
+                </li>`).join('');
+            addDragAndDropHandlers();
+        }
+        
+        function updatePage(index, value) { pages[index] = value; }
+        function deletePage(index) { pages.splice(index, 1); renderPages(); }
+        function addPage() { 
+            const input = document.getElementById('newPageInput'); 
+            if (input.value.trim()) { pages.push(input.value.trim()); input.value = ''; renderPages(); } 
+        }
 
-                function renderPages() {
-                    list.innerHTML = '';
-                    if (pages.length === 0) {
-                        list.innerHTML = `<p class="text-center text-slate-400">No pages yet. Add one below!</p>`;
-                    }
-                    pages.forEach((page, index) => {
-                        list.innerHTML += \`
-                            <li class="flex items-center gap-3 p-3 rounded-lg bg-slate-700 shadow-md" draggable="true" data-index="\${index}">
-                                <span class="text-slate-400 font-bold">⠿</span>
-                                <input value="\${page.replace(/"/g, '&quot;')}" onchange="updatePage(\${index}, this.value)" class="bg-transparent flex-grow focus:outline-none p-1 focus:bg-slate-800 rounded">
-                                <button onclick="deletePage(\${index})" class="bg-red-600 text-white font-bold w-7 h-7 rounded-full hover:bg-red-700 transition">X</button>
-                            </li>\`;
-                    });
-                    addDragHandlers();
+        function addDragAndDropHandlers() {
+            let draggedItem = null;
+            list.querySelectorAll('li').forEach(item => {
+                item.addEventListener('dragstart', (e) => {
+                    draggedItem = e.target;
+                    setTimeout(() => e.target.classList.add('opacity-50'), 0);
+                });
+                item.addEventListener('dragend', (e) => {
+                    e.target.classList.remove('opacity-50');
+                    const newPages = Array.from(list.querySelectorAll('li')).map(li => li.querySelector('input').value);
+                    pages = newPages;
+                    renderPages(); // Re-render to update numbers
+                });
+                item.addEventListener('dragover', (e) => {
+                    e.preventDefault();
+                    const afterElement = getDragAfterElement(list, e.clientY);
+                    list.insertBefore(draggedItem, afterElement);
+                });
+            });
+        }
+        
+        function getDragAfterElement(container, y) {
+            const draggableElements = [...container.querySelectorAll('li:not(.opacity-50)')];
+            return draggableElements.reduce((closest, child) => {
+                const box = child.getBoundingClientRect();
+                const offset = y - box.top - box.height / 2;
+                if (offset < 0 && offset > closest.offset) { return { offset: offset, element: child }; } 
+                else { return closest; }
+            }, { offset: Number.NEGATIVE_INFINITY }).element;
+        }
+
+        async function generateFinalWebsite() {
+            const btn = document.getElementById('generateFinalBtn');
+            const spinner = document.getElementById('loadingSpinner');
+            btn.style.display = 'none';
+            spinner.style.display = 'block';
+            
+            try { 
+                const res = await fetch('/generate_website', { 
+                    method: 'POST', 
+                    headers: {'Content-Type': 'application/json'}, 
+                    body: JSON.stringify({ description: description, pages: pages }) 
+                }); 
+                
+                if (!res.ok) {
+                    const errorData = await res.json();
+                    throw new Error(errorData.error || 'Server error generating website.');
                 }
+                
+                const websiteData = await res.json();
+                localStorage.setItem('websiteData', JSON.stringify(websiteData));
+                window.location.href = '/preview';
 
-                function updatePage(index, value) { pages[index] = value; }
-                function deletePage(index) { pages.splice(index, 1); renderPages(); }
-                function addPage() {
-                    const input = document.getElementById('newPageInput');
-                    if (input.value.trim()) { pages.push(input.value.trim()); input.value = ''; renderPages(); }
-                }
-
-                function addDragHandlers() {
-                    list.querySelectorAll('li').forEach(item => {
-                        item.addEventListener('dragstart', (e) => {
-                            draggedItem = e.target;
-                            setTimeout(() => e.target.classList.add('ghost'), 0);
-                        });
-                        item.addEventListener('dragend', (e) => {
-                            e.target.classList.remove('ghost');
-                            draggedItem = null;
-                            const newPages = Array.from(list.querySelectorAll('li')).map(li => li.querySelector('input').value);
-                            pages = newPages;
-                            renderPages();
-                        });
-                        item.addEventListener('dragover', (e) => {
-                            e.preventDefault();
-                            const afterElement = getDragAfterElement(list, e.clientY);
-                            if (afterElement == null) {
-                                list.appendChild(draggedItem);
-                            } else {
-                                list.insertBefore(draggedItem, afterElement);
-                            }
-                        });
-                    });
-                }
-
-                function getDragAfterElement(container, y) {
-                    const draggableElements = [...container.querySelectorAll('li:not(.ghost)')];
-                    return draggableElements.reduce((closest, child) => {
-                        const box = child.getBoundingClientRect();
-                        const offset = y - box.top - box.height / 2;
-                        return (offset < 0 && offset > closest.offset) ? { offset: offset, element: child } : closest;
-                    }, { offset: Number.NEGATIVE_INFINITY }).element;
-                }
-
-                async function generateWebsite() {
-                    if (pages.length === 0) {
-                        alert("Please add at least one page to your website.");
-                        return;
-                    }
-                    const btn = document.getElementById('generateFinalBtn');
-                    const spinner = document.getElementById('loadingSpinner');
-                    btn.disabled = true;
-                    btn.textContent = 'Building Website... Please Wait';
-                    spinner.style.display = 'block';
-
-                    try {
-                        const res = await fetch('/generate_website', {
-                            method: 'POST',
-                            headers: {'Content-Type': 'application/json'},
-                            body: JSON.stringify({ topic: mainTopic, pages: pages })
-                        });
-                        if (!res.ok) {
-                             const errText = await res.text();
-                             throw new Error('Server error generating website: ' + errText);
-                        }
-                        const result = await res.json();
-                        // Store in session storage to pass to the next page
-                        sessionStorage.setItem('websiteData', JSON.stringify(result));
-                        window.location.href = '/preview_website';
-                    } catch (err) {
-                        alert('Failed to generate website: ' + err);
-                        btn.disabled = false;
-                        btn.textContent = '✨ Generate My Website';
-                        spinner.style.display = 'none';
-                    }
-                }
-                renderPages();
-            </script>
-        </body>
-        </html>
-    ''', topic=topic, pages=pages)
+            } catch (err) { 
+                alert('Failed to generate website: ' + err.message); 
+                btn.style.display = 'block'; 
+                spinner.style.display = 'none'; 
+            }
+        }
+    </script>
+</body>
+</html>''')
 
 @app.route('/generate_website', methods=['POST'])
 def generate_website():
-    """Generates the full HTML for the website based on the topic and page list."""
     data = request.get_json()
-    main_topic = data.get('topic')
-    user_pages = data.get('pages', [])
-    if not main_topic or not user_pages:
-        return jsonify({"error": "Invalid request parameters"}), 400
+    description, pages = data.get('description'), data.get('pages', [])
+    if not description or not pages: 
+        return jsonify({"error": "Invalid request data"}), 400
 
     prompt = f"""
-    Act as an expert frontend web developer. Your task is to generate a single, complete, and visually stunning HTML file for a website about "{main_topic}".
+    You are an expert web developer. Your task is to generate a complete, single-file, responsive website based on a user's request.
 
-    **KEY INSTRUCTIONS:**
-    1.  **Single File Architecture:** All HTML, CSS, and JavaScript must be contained within one single `.html` file.
-        - Use a `<style>` tag in the `<head>` for all CSS.
-        - Use a `<script>` tag before the closing `</body>` tag for any JavaScript.
-    2.  **Styling with Tailwind CSS:** You MUST use Tailwind CSS for all styling. Include it via the CDN: `<script src="https://cdn.tailwindcss.com"></script>`. Do not use any other CSS frameworks or external stylesheets.
-    3.  **Content Sections:** Create a separate `<section>` for each of the following pages: {', '.join(user_pages)}.
-        - Each section must have a unique `id` that matches the page name (e.g., `<section id="about-us">`). Convert page names to kebab-case for the id.
-        - Populate each section with high-quality, relevant placeholder text (paragraphs, headings, lists) that fits the theme of "{main_topic}". The content should be substantial and well-written.
-    4.  **Navigation Bar:**
-        - Create a sticky navigation bar at the top of the page.
-        - It must contain links that smoothly scroll to the corresponding section on the page. For example, a link for "About Us" should look like `<a href="#about-us">About Us</a>`.
-        - Implement a "mobile menu" (hamburger menu) for smaller screens.
-    5.  **Visual Polish:**
-        - Use a modern and clean design aesthetic. Incorporate good use of whitespace, typography (e.g., from Google Fonts), and a cohesive color palette.
-        - Add subtle hover effects and transitions to interactive elements like buttons and links.
-        - The overall layout must be fully responsive and look excellent on all screen sizes, from mobile to desktop.
-    6.  **Hero Section:** The first section should be a compelling "hero" section that grabs the user's attention, clearly stating the website's purpose related to "{main_topic}".
-    7.  **Footer:** Include a simple footer at the bottom with copyright information and social media links.
-    8.  **Output Format:** Your entire output must be ONLY the raw HTML code, starting with `<!DOCTYPE html>` and ending with `</html>`. Do NOT include any explanations, comments outside the code, or markdown formatting like ```html.
+    **Website Description:** "{description}"
+    **Pages to Create:** {', '.join(pages)}
 
-    Generate the complete HTML file now.
+    **INSTRUCTIONS:**
+    1.  **Framework:** Use HTML with Tailwind CSS loaded from a CDN. All CSS must be implemented using Tailwind classes directly in the HTML elements. Do not generate a separate `<style>` block unless absolutely necessary for something Tailwind cannot do (like complex animations).
+    2.  **Structure:** Create a single `index.html` file. The website should be a "single-page application" where the different "pages" are actually `<section>` elements.
+    3.  **Navigation:**
+        * Create a responsive navigation bar at the top (`<nav>`). It should have a simple logo or site title on the left.
+        * The navigation links on the right must correspond to the requested pages. Each link's `href` should point to the ID of a section (e.g., `<a href="#about">About</a>`).
+        * The nav should have a subtle background color (e.g., `bg-slate-800/80`), be fixed to the top, and have a backdrop blur effect.
+    4.  **Sections (Pages):**
+        * For each page in the list, create a `<section>` tag with a corresponding `id` (e.g., `<section id="about" class="min-h-screen ...">`).
+        * Each section should have padding (`p-8` or more) and be designed to fill roughly the height of the screen (`min-h-screen`).
+        * Populate each section with relevant, high-quality placeholder content that matches the page's purpose and the overall website description. Use a mix of headings (`h1`, `h2`), paragraphs (`p`), and placeholder images from `https://placehold.co/`. For example, an "About" page should have text about the company's mission, and a "Services" page should have cards describing different services.
+    5.  **JavaScript:**
+        * Generate a `<script>` block to be placed before the closing `</body>` tag.
+        * The script should handle smooth scrolling for the navigation links. When a nav link is clicked, it should smoothly scroll to the corresponding section.
+        * Add a small feature: highlight the active navigation link based on which section is currently visible in the viewport.
+    6.  **Footer:** Include a simple `<footer>` at the bottom with a copyright notice.
+    7.  **Content Quality:** The generated content (headings, paragraphs) should be well-written, professional, and tailored to the website's description.
+
+    **RESPONSE FORMAT:**
+    Return a single, raw JSON object with three keys: "html", "css", and "javascript".
+    - `html`: The full HTML content, from `<!DOCTYPE html>` to `</html>`.
+    - `css`: An empty string, as all styling should be done with Tailwind classes in the HTML.
+    - `javascript`: The complete JavaScript code for the `<script>` tag, without the `<script>` tags themselves.
+
+    Example JSON structure:
+    {{
+        "html": "<!DOCTYPE html>...",
+        "css": "",
+        "javascript": "document.addEventListener('DOMContentLoaded', () => {{...}});"
+    }}
+
+    Ensure the JSON is perfectly formatted and contains no extra text, explanations, or markdown.
     """
-    api_url = f"[https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro-latest:generateContent?key=](https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro-latest:generateContent?key=){GEMINI_API_KEY}"
+    
+    api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key={GEMINI_API_KEY}"
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.5}
+        "generationConfig": {"temperature": 0.6, "responseMimeType": "application/json"}
     }
-
+    
     try:
         result = api_call_with_backoff(api_url, headers={'Content-Type': 'application/json'}, payload=payload)
-        # The entire response is expected to be the HTML code
-        html_content = result['candidates'][0]['content']['parts'][0]['text']
-
-        # Clean up the response to ensure it's pure HTML
-        if html_content.strip().startswith("```html"):
-            html_content = html_content.strip()[7:-3].strip()
-
-        return jsonify({"html_code": html_content})
+        website_data_str = result['candidates'][0]['content']['parts'][0]['text']
+        website_data = json.loads(website_data_str)
+        return jsonify(website_data)
 
     except Exception as e:
-        print(f"Error during final website generation: {e}")
-        return jsonify({"error": f"Failed to generate website code: {e}"}), 500
+        print(f"Error during website generation: {e}")
+        return jsonify({"error": "Failed to generate website content. The model may have returned an invalid format."}), 500
 
-
-@app.route('/preview_website')
-def preview_website():
-    """Displays the generated website code and a live preview in an iframe."""
+@app.route('/preview')
+def preview():
     return render_template_string('''
         <!DOCTYPE html>
-        <html lang="en">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Website Preview & Code</title>
-            <script src="https://cdn.tailwindcss.com"></script>
-            <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
-            <style>
-                body { font-family: 'Inter', sans-serif; background-color: #0f172a; color: #e2e8f0; }
-                #code-editor { font-family: 'Courier New', Courier, monospace; background-color: #1e293b; border-color: #334155; }
-                iframe { border: 2px solid #334155; }
-                .tab-btn.active { background-color: #0ea5e9; color: white; }
-                .tab-btn { background-color: #334155; color: #94a3b8; }
-                .tab-content { display: none; }
-                .tab-content.active { display: block; }
-            </style>
-        </head>
-        <body class="h-screen flex flex-col p-4 gap-4">
-            <header class="flex-shrink-0 flex justify-between items-center">
-                <h1 class="text-2xl font-bold text-white">Your Generated Website</h1>
-                <div>
-                    <button id="copyBtn" class="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg transition">Copy Code</button>
-                    <a href="/" class="bg-sky-600 hover:bg-sky-700 text-white font-bold py-2 px-4 rounded-lg transition">Start Over</a>
-                </div>
-            </header>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Website Preview & Download</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; background-color: #0f172a; color: #e2e8f0; display: flex; flex-direction: column; height: 100vh; margin: 0; }
+        .top-bar { background-color: #1e293b; flex-shrink: 0; }
+        .preview-area { flex-grow: 1; background-color: #0f172a; }
+        iframe { border: 2px solid #334155; border-radius: 0.5rem; }
+        button { transition: all 0.2s ease-in-out; }
+        button:hover { transform: translateY(-2px); box-shadow: 0 4px 10px rgba(0,0,0,0.3); }
+    </style>
+</head>
+<body>
+    <div class="top-bar p-4 flex justify-between items-center shadow-lg z-10">
+        <div>
+            <h1 class="text-2xl font-bold text-white">Website Preview</h1>
+            <p class="text-slate-400">Here is the website generated by the AI. You can download the source files below.</p>
+        </div>
+        <div class="flex items-center gap-4">
+            <button id="downloadHtmlBtn" class="bg-blue-600 text-white font-bold py-2 px-4 rounded-lg">Download HTML</button>
+            <button id="downloadCssBtn" class="bg-green-600 text-white font-bold py-2 px-4 rounded-lg">Download CSS</button>
+            <button id="downloadJsBtn" class="bg-yellow-500 text-black font-bold py-2 px-4 rounded-lg">Download JS</button>
+        </div>
+    </div>
+    <div class="preview-area p-4">
+        <iframe id="preview-frame" class="w-full h-full bg-white"></iframe>
+    </div>
 
-            <div class="flex-shrink-0">
-                <button class="tab-btn py-2 px-4 rounded-t-lg active" data-tab="preview">Preview</button>
-                <button class="tab-btn py-2 px-4 rounded-t-lg" data-tab="code">Code</button>
-            </div>
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const storedData = localStorage.getItem('websiteData');
+            if (!storedData) {
+                alert("No website data found to preview.");
+                return;
+            }
 
-            <main class="flex-grow flex flex-col bg-slate-800 rounded-b-lg rounded-r-lg p-4 overflow-hidden">
-                <div id="preview" class="tab-content active h-full">
-                    <iframe id="preview-frame" class="w-full h-full bg-white rounded-md"></iframe>
-                </div>
-                <div id="code" class="tab-content h-full">
-                     <textarea id="code-editor" class="w-full h-full p-4 rounded-md text-sm" readonly></textarea>
-                </div>
-            </main>
+            const websiteData = JSON.parse(storedData);
+            const { html, css, javascript } = websiteData;
 
-            <script>
-                document.addEventListener('DOMContentLoaded', () => {
-                    const data = sessionStorage.getItem('websiteData');
-                    if (data) {
-                        const { html_code } = JSON.parse(data);
-                        document.getElementById('code-editor').value = html_code;
+            // Combine files for preview
+            const fullHtml = `
+                ${html.replace('</head>', `<style>${css}</style></head>`)}
+            `.replace('</body>', `<script>${javascript}<\/script></body>`);
 
-                        const iframe = document.getElementById('preview-frame');
-                        iframe.srcdoc = html_code;
-                    } else {
-                        document.body.innerHTML = '<h1 class="text-center text-2xl mt-10">No website data found. Please <a href="/" class="text-sky-400 underline">start over</a>.</h1>';
-                    }
+            const previewFrame = document.getElementById('preview-frame');
+            previewFrame.srcdoc = fullHtml;
 
-                    const tabs = document.querySelectorAll('.tab-btn');
-                    const contents = document.querySelectorAll('.tab-content');
-                    tabs.forEach(tab => {
-                        tab.addEventListener('click', () => {
-                            tabs.forEach(t => t.classList.remove('active'));
-                            tab.classList.add('active');
-                            contents.forEach(c => c.classList.remove('active'));
-                            document.getElementById(tab.dataset.tab).classList.add('active');
-                        });
-                    });
+            // Setup download buttons
+            document.getElementById('downloadHtmlBtn').addEventListener('click', () => downloadFile('index.html', html, 'text/html'));
+            document.getElementById('downloadCssBtn').addEventListener('click', () => downloadFile('style.css', css, 'text/css'));
+            document.getElementById('downloadJsBtn').addEventListener('click', () => downloadFile('script.js', javascript, 'application/javascript'));
+        });
 
-                    document.getElementById('copyBtn').addEventListener('click', () => {
-                        const code = document.getElementById('code-editor').value;
-                        navigator.clipboard.writeText(code).then(() => {
-                            const btn = document.getElementById('copyBtn');
-                            btn.textContent = 'Copied!';
-                            setTimeout(() => { btn.textContent = 'Copy Code'; }, 2000);
-                        }, () => {
-                            alert('Failed to copy code.');
-                        });
-                    });
-                });
-            </script>
-        </body>
-        </html>
-    ''')
+        function downloadFile(filename, content, mimeType) {
+            const blob = new Blob([content], { type: mimeType });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+    </script>
+</body>
+</html>''')
+
 
 if __name__ == '__main__':
-    # Use port 5001 to avoid conflicts with other common ports
     app.run(debug=True, port=5001)
