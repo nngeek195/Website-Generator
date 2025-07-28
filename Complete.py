@@ -5,6 +5,7 @@ import requests
 import json
 import time # For exponential backoff
 from dotenv import load_dotenv
+from PIL import Image # Import the Pillow library for image resizing
 
 # Load environment variables from .env file
 load_dotenv()
@@ -13,20 +14,20 @@ app = Flask(__name__)
 
 # --- API Keys Configuration ---
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "YOUR_GEMINI_API_KEY_HERE")
-# Unsplash is no longer needed for this version
+UNSPLASH_ACCESS_KEY = os.getenv("UNSPLASH_ACCESS_KEY", "YOUR_UNSPLASH_ACCESS_KEY_HERE")
 # -----------------------------
 
-# Directory for storing generated website files for download
+# Directory for storing downloaded images
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
-WEBSITE_DIR = os.path.join(BASE_DIR, 'websites')
-if not os.path.exists(WEBSITE_DIR):
-    os.makedirs(WEBSITE_DIR)
+IMAGES_DIR = os.path.join(BASE_DIR, 'images')
+if not os.path.exists(IMAGES_DIR):
+    os.makedirs(IMAGES_DIR)
 
 # --- Helper function for exponential backoff ---
 def api_call_with_backoff(url, headers, payload, max_retries=5, initial_delay=1):
     for i in range(max_retries):
         try:
-            response = requests.post(url, headers=headers, data=json.dumps(payload), timeout=300) # Increased timeout for larger generation
+            response = requests.post(url, headers=headers, data=json.dumps(payload), timeout=300) # Increased timeout
             if not response.ok:
                 print(f"--- API Error Response ---")
                 print(f"Status Code: {response.status_code}")
@@ -44,6 +45,38 @@ def api_call_with_backoff(url, headers, payload, max_retries=5, initial_delay=1)
             if i >= max_retries - 1: raise
             time.sleep(initial_delay * (2 ** i))
 
+# --- Helper function to download and resize an image ---
+def download_image(image_url, filename):
+    try:
+        response = requests.get(image_url, stream=True)
+        response.raise_for_status()
+        with Image.open(response.raw) as img:
+            img.thumbnail((1920, 1080), Image.Resampling.LANCZOS)
+            filepath = os.path.join(IMAGES_DIR, filename)
+            img.save(filepath, 'JPEG', quality=85, optimize=True)
+        return os.path.join('images', filename).replace('\\', '/')
+    except Exception as e:
+        print(f"Error during image processing: {e}")
+        return None
+
+# --- Helper function to search Unsplash ---
+def search_unsplash_image(query):
+    if not UNSPLASH_ACCESS_KEY or UNSPLASH_ACCESS_KEY == "YOUR_UNSPLASH_ACCESS_KEY_HERE":
+        print("Unsplash API key not configured. Using placeholder.")
+        return f"https://placehold.co/1280x800/1e293b/e2e8f0?text={query.replace(' ', '+')}"
+    
+    url = "https://api.unsplash.com/search/photos"
+    params = {"query": query, "per_page": 1, "orientation": "landscape"}
+    headers = {"Authorization": f"Client-ID {UNSPLASH_ACCESS_KEY}"}
+    try:
+        res = requests.get(url, headers=headers, params=params)
+        res.raise_for_status()
+        data = res.json()
+        return data['results'][0]['urls']['regular'] if data['results'] else None
+    except Exception as e:
+        print(f"Error searching Unsplash for query '{query}': {e}")
+        return f"https://placehold.co/1280x800/1e293b/e2e8f0?text={query.replace(' ', '+')}"
+
 @app.route('/')
 def index():
     return render_template_string('''
@@ -56,7 +89,6 @@ def index():
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
     <style>
-        /* All CSS from the original file remains the same, as it provides a great UI foundation */
         * { box-sizing: border-box; }
         body { font-family: 'Inter', sans-serif; background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #334155 100%); color: #e2e8f0; min-height: 100vh; margin: 0; padding: 0; overflow-x: hidden; position: relative; display: flex; align-items: center; justify-content: center; }
         .bg-animation { position: fixed; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 1; will-change: transform; }
@@ -70,7 +102,6 @@ def index():
         @keyframes gridMove { 0% { transform: translate(0, 0); } 100% { transform: translate(50px, 50px); } }
         .container { max-width: min(90vw, 750px); margin: clamp(20px, 5vh, 50px) auto; padding: clamp(1.5rem, 4vw, 3rem); background: rgba(30, 41, 59, 0.95); backdrop-filter: blur(20px); border: 1px solid rgba(99, 179, 237, 0.3); border-radius: clamp(1rem, 2vw, 1.5rem); box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(99, 179, 237, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.1); position: relative; z-index: 10; transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1); display: flex; flex-direction: column; align-items: center; justify-content: center; }
         @media (hover: hover) { .container:hover { transform: translateY(-3px); } }
-        /* MODIFIED FOR TEXTAREA */
         textarea { width: 100%; padding: clamp(0.75rem, 3vw, 1rem) clamp(1rem, 4vw, 1.5rem); border-radius: clamp(0.5rem, 2vw, 0.75rem); border: 2px solid rgba(71, 85, 105, 0.4); background: rgba(51, 65, 85, 0.9); backdrop-filter: blur(10px); color: #e2e8f0; transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); font-size: clamp(1rem, 3vw, 1.1rem); line-height: 1.5; -webkit-appearance: none; appearance: none; min-height: 120px; resize: vertical; }
         textarea:focus { border-color: #63b3ed; box-shadow: 0 0 0 3px rgba(99, 179, 237, 0.25), 0 8px 25px rgba(99, 179, 237, 0.15); outline: none; transform: translateY(-1px); }
         button { background: linear-gradient(135deg, #63b3ed, #90cdf4); color: #1a202c; padding: clamp(0.75rem, 3vw, 1rem) clamp(1.5rem, 5vw, 2.5rem); border-radius: clamp(0.75rem, 2vw, 1rem); font-weight: 600; cursor: pointer; border: none; transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); font-size: clamp(1rem, 3vw, 1.1rem); position: relative; overflow: hidden; box-shadow: 0 8px 25px rgba(99, 179, 237, 0.3); min-height: 48px; display: inline-flex; align-items: center; justify-content: center; white-space: nowrap; }
@@ -86,7 +117,6 @@ def index():
         .description-text { font-size: clamp(1rem, 3vw, 1.125rem); line-height: 1.6; margin-bottom: clamp(2rem, 5vw, 2.5rem); }
         .label-text { font-size: clamp(1rem, 3vw, 1.125rem); margin-bottom: clamp(0.75rem, 2vw, 1rem); }
         .button-container { display: flex; align-items: center; justify-content: center; flex-wrap: nowrap; gap: clamp(0.75rem, 3vw, 1.5rem); margin-top: clamp(1.5rem, 4vw, 2rem); }
-        /* Fade-in animation */
         .fade-in { animation: fadeIn 0.8s cubic-bezier(0.4, 0, 0.2, 1) forwards; opacity: 0; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
     </style>
@@ -126,7 +156,6 @@ def index():
     </div>
 
     <script>
-        // Form validation
         function validateInput(description) {
             if (!description || description.trim().length < 10) {
                 return 'Please provide a more detailed description (at least 10 characters).';
@@ -174,18 +203,15 @@ def index():
                     throw new Error('Invalid response format from server.');
                 }
 
-                // Store description and pages for the next step
                 sessionStorage.setItem('websiteDescription', description.trim());
                 sessionStorage.setItem('websitePages', JSON.stringify(data.pages));
                 
-                // Redirect to the page management view
                 window.location.href = `/manage_pages`;
                 
             } catch (error) {
                 console.error('Submission error:', error);
                 alert('Failed to generate page ideas. ' + error.message);
                 
-                // Reset UI state
                 btn.disabled = false;
                 btn.innerHTML = '✨ Plan Website Pages';
                 spinner.style.display = 'none';
@@ -211,17 +237,15 @@ def suggest_pages():
         text_response = result['candidates'][0]['content']['parts'][0]['text']
         pages = [p.strip() for p in text_response.strip().split(',') if p.strip()]
         
-        # Ensure there are at least a few default pages
         if not pages or len(pages) < 2:
             pages = ["Home", "About", "Contact"]
             
-        return jsonify({"pages": pages[:8]}) # Limit to 8 pages max initially
+        return jsonify({"pages": pages[:8]})
     except Exception as e:
         return jsonify({"error": {"message": f"Failed to call Gemini API: {e}"}}), 500
 
 @app.route('/manage_pages')
 def manage_pages():
-    # This page will now get its data from sessionStorage on the client-side
     return render_template_string('''
         <!DOCTYPE html>
 <html lang="en">
@@ -232,7 +256,6 @@ def manage_pages():
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
     <style>
-        /* Reusing the exact same CSS from the original manage_presentation page */
         * { box-sizing: border-box; }
         body { font-family: 'Inter', sans-serif; background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #334155 100%); color: #e2e8f0; min-height: 100vh; margin: 0; padding: 0; overflow-x: hidden; position: relative; }
         .bg-animation { position: fixed; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 1; will-change: transform; }
@@ -325,7 +348,7 @@ def manage_pages():
                     e.target.classList.remove('opacity-50');
                     const newPages = Array.from(list.querySelectorAll('li')).map(li => li.querySelector('input').value);
                     pages = newPages;
-                    renderPages(); // Re-render to update numbers
+                    renderPages();
                 });
                 item.addEventListener('dragover', (e) => {
                     e.preventDefault();
@@ -377,6 +400,10 @@ def manage_pages():
 </body>
 </html>''')
 
+@app.route('/images/<path:filename>')
+def serve_image(filename):
+    return send_from_directory(IMAGES_DIR, filename)
+
 @app.route('/generate_website', methods=['POST'])
 def generate_website():
     data = request.get_json()
@@ -385,136 +412,575 @@ def generate_website():
         return jsonify({"error": "Invalid request data"}), 400
 
     prompt = f"""
-    You are an expert web developer. Your task is to generate a complete, single-file, responsive website based on a user's request.
+    You are an expert web developer creating a structured JSON representation of a website.
 
     **Website Description:** "{description}"
     **Pages to Create:** {', '.join(pages)}
 
     **INSTRUCTIONS:**
-    1.  **Framework:** Use HTML with Tailwind CSS loaded from a CDN. All CSS must be implemented using Tailwind classes directly in the HTML elements. Do not generate a separate `<style>` block unless absolutely necessary for something Tailwind cannot do (like complex animations).
-    2.  **Structure:** Create a single `index.html` file. The website should be a "single-page application" where the different "pages" are actually `<section>` elements.
-    3.  **Navigation:**
-        * Create a responsive navigation bar at the top (`<nav>`). It should have a simple logo or site title on the left.
-        * The navigation links on the right must correspond to the requested pages. Each link's `href` should point to the ID of a section (e.g., `<a href="#about">About</a>`).
-        * The nav should have a subtle background color (e.g., `bg-slate-800/80`), be fixed to the top, and have a backdrop blur effect.
-    4.  **Sections (Pages):**
-        * For each page in the list, create a `<section>` tag with a corresponding `id` (e.g., `<section id="about" class="min-h-screen ...">`).
-        * Each section should have padding (`p-8` or more) and be designed to fill roughly the height of the screen (`min-h-screen`).
-        * Populate each section with relevant, high-quality placeholder content that matches the page's purpose and the overall website description. Use a mix of headings (`h1`, `h2`), paragraphs (`p`), and placeholder images from `https://placehold.co/`. For example, an "About" page should have text about the company's mission, and a "Services" page should have cards describing different services.
-    5.  **JavaScript:**
-        * Generate a `<script>` block to be placed before the closing `</body>` tag.
-        * The script should handle smooth scrolling for the navigation links. When a nav link is clicked, it should smoothly scroll to the corresponding section.
-        * Add a small feature: highlight the active navigation link based on which section is currently visible in the viewport.
-    6.  **Footer:** Include a simple `<footer>` at the bottom with a copyright notice.
-    7.  **Content Quality:** The generated content (headings, paragraphs) should be well-written, professional, and tailored to the website's description.
-
-    **RESPONSE FORMAT:**
-    Return a single, raw JSON object with three keys: "html", "css", and "javascript".
-    - `html`: The full HTML content, from `<!DOCTYPE html>` to `</html>`.
-    - `css`: An empty string, as all styling should be done with Tailwind classes in the HTML.
-    - `javascript`: The complete JavaScript code for the `<script>` tag, without the `<script>` tags themselves.
-
-    Example JSON structure:
+    Your output MUST be a single, raw JSON object. This object will be the data model for a web editor.
+    
+    **JSON Structure:**
     {{
-        "html": "<!DOCTYPE html>...",
-        "css": "",
-        "javascript": "document.addEventListener('DOMContentLoaded', () => {{...}});"
+      "globalStyles": {{
+        "theme": "dark",
+        "fontFamily": "'Inter', sans-serif",
+        "backgroundColor": "#0f172a",
+        "textColor": "#e2e8f0",
+        "primaryColor": "#4f46e5",
+        "secondaryColor": "#1e293b",
+        "accentColor": "#38bdf8"
+      }},
+      "pages": [
+        // One object for each page in the list: {', '.join(pages)}
+      ]
     }}
 
-    Ensure the JSON is perfectly formatted and contains no extra text, explanations, or markdown.
+    **For each page object in the "pages" array, use this structure:**
+    {{
+      "id": "page-unique-id", // e.g., "page-home", "page-about"
+      "name": "Page Name",   // e.g., "Home", "About Us"
+      "styles": {{
+        "backgroundColor": "var(--secondary-color)",
+        "padding": "6rem 2rem"
+      }},
+      "elements": [
+        // Array of element objects for this page
+      ]
+    }}
+
+    **For each element in the "elements" array, use this structure:**
+    {{
+      "id": "el-unique-id", // e.g., "el-home-title", "el-about-image"
+      "type": "heading" | "text" | "button" | "image",
+      "content": "...", // Text for headings, paragraphs, or buttons. For images, this is an Unsplash search query.
+      "link": "#", // A URL link, default to "#"
+      "styles": {{
+        "position": "absolute",
+        "top": "10%", "left": "15%", "width": "70%", "height": "20%",
+        "color": "var(--text-color)", "backgroundColor": "transparent", "fontSize": "3rem",
+        "textAlign": "center", "borderRadius": "0.5rem", "padding": "1rem 2rem", "border": "none"
+      }},
+      "hoverStyles": {{
+          "backgroundColor": "var(--primary-color)", "transform": "scale(1.05)"
+      }}
+    }}
+
+    **TASK & LAYOUT RULES:**
+    1.  Generate the full JSON object following the schema above exactly.
+    2.  Create one page object for each page name provided.
+    3.  For each page, create at least 2-4 relevant elements (headings, text, images, buttons).
+    4.  **Use absolute positioning for ALL elements.** Provide sensible initial `top`, `left`, `width`, and `height` percentages.
+    5.  For `image` elements, the `content` field MUST be a concise, descriptive Unsplash search query.
+    6.  Use CSS variables like `var(--primary-color)` in element styles.
+    7.  For "Home", create a hero section with a large heading, a sub-paragraph, and a call-to-action button.
+    8.  For buttons, provide meaningful hoverStyles. For other elements, you can leave hoverStyles empty or with default values.
+
+    Return ONLY the raw, perfectly formatted JSON. Do not include markdown, explanations, or any other text.
     """
     
     api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key={GEMINI_API_KEY}"
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.6, "responseMimeType": "application/json"}
+        "generationConfig": {"temperature": 0.7, "responseMimeType": "application/json"}
     }
     
     try:
         result = api_call_with_backoff(api_url, headers={'Content-Type': 'application/json'}, payload=payload)
-        website_data_str = result['candidates'][0]['content']['parts'][0]['text']
-        website_data = json.loads(website_data_str)
+        response_text = result['candidates'][0]['content']['parts'][0]['text']
+        
+        cleaned_text = response_text.strip()
+        if cleaned_text.startswith("```json"):
+            cleaned_text = cleaned_text[7:]
+        if cleaned_text.endswith("```"):
+            cleaned_text = cleaned_text[:-3]
+        cleaned_text = cleaned_text.strip()
+
+        try:
+            website_data = json.loads(cleaned_text)
+        except json.JSONDecodeError as e:
+            print(f"Initial JSON parsing failed: {e}. Attempting recovery.")
+            if "Extra data" in str(e):
+                try:
+                    decoder = json.JSONDecoder()
+                    obj, end = decoder.raw_decode(cleaned_text)
+                    website_data = obj
+                    print(f"Successfully recovered JSON object, discarding extra data from index {end}.")
+                except json.JSONDecodeError as inner_e:
+                    print(f"Recovery failed: {inner_e}")
+                    raise inner_e
+            else:
+                raise e
+
+        if 'pages' not in website_data or 'globalStyles' not in website_data:
+            raise ValueError("Generated JSON is missing required 'pages' or 'globalStyles' keys.")
+
+        # Process images
+        for page in website_data.get('pages', []):
+            for element in page.get('elements', []):
+                if element.get('type') == 'image':
+                    query = element.get('content')
+                    if query:
+                        print(f"Fetching image for query '{query}'...")
+                        image_url = search_unsplash_image(query)
+                        if image_url:
+                            filename = f"{element['id']}.jpg"
+                            local_path = download_image(image_url, filename)
+                            element['src'] = local_path # Add 'src' key with the local path
+                        else:
+                            element['src'] = f"https://placehold.co/600x400/1e293b/e2e8f0?text=Not+Found"
+
+
         return jsonify(website_data)
 
     except Exception as e:
         print(f"Error during website generation: {e}")
-        return jsonify({"error": "Failed to generate website content. The model may have returned an invalid format."}), 500
+        return jsonify({"error": f"Failed to generate website content: {e}"}), 500
+
 
 @app.route('/preview')
 def preview():
     return render_template_string('''
-        <!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Website Preview & Download</title>
+    <title>AI Website Editor</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/interactjs/dist/interact.min.js"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700&family=Poppins:wght@400;700&family=Roboto:wght@400;700&family=Lora:wght@400;700&family=Playfair+Display:wght@400;700&display=swap" rel="stylesheet">
     <style>
-        body { font-family: 'Inter', sans-serif; background-color: #0f172a; color: #e2e8f0; display: flex; flex-direction: column; height: 100vh; margin: 0; }
-        .top-bar { background-color: #1e293b; flex-shrink: 0; }
-        .preview-area { flex-grow: 1; background-color: #0f172a; }
-        iframe { border: 2px solid #334155; border-radius: 0.5rem; }
-        button { transition: all 0.2s ease-in-out; }
-        button:hover { transform: translateY(-2px); box-shadow: 0 4px 10px rgba(0,0,0,0.3); }
+        body { font-family: 'Inter', sans-serif; background-color: #0f172a; color: #e2e8f0; }
+        .editor-container { display: grid; grid-template-columns: 1fr 350px; height: 100vh; }
+        .main-canvas { display: flex; flex-direction: column; background-color: #1e293b; }
+        .properties-panel { background-color: #0f172a; padding: 1rem; overflow-y: auto; border-left: 1px solid #334155; }
+        .top-toolbar { background-color: #1e293b; padding: 0.5rem 1rem; border-bottom: 1px solid #334155; flex-shrink: 0; }
+        .iframe-wrapper { flex-grow: 1; padding: 1rem; }
+        #editor-frame { width: 100%; height: 100%; border: none; background-color: white; border-radius: 0.5rem; transition: all 0.3s ease; }
+        .panel-section details { margin-bottom: 1rem; }
+        .panel-section summary { font-weight: 600; color: #94a3b8; margin-bottom: 0.75rem; border-bottom: 1px solid #334155; padding-bottom: 0.5rem; cursor: pointer; }
+        .prop-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.75rem; }
+        .prop-label { font-size: 0.875rem; color: #cbd5e1; margin-bottom: 0.25rem; display: block; }
+        .prop-input { width: 100%; background-color: #1e293b; border: 1px solid #475569; color: white; border-radius: 0.375rem; padding: 0.5rem; font-size: 0.875rem; }
+        .prop-input[type="color"] { padding: 0.125rem; height: 38px; }
+        .selected-in-frame { outline: 3px solid #38bdf8 !important; outline-offset: 2px; box-shadow: 0 0 20px rgba(56, 189, 248, 0.5); }
+        .page-tab { background-color: #334155; color: #cbd5e1; padding: 0.25rem 0.75rem; border-radius: 0.375rem; cursor: pointer; transition: all 0.2s ease; }
+        .page-tab:hover { background-color: #475569; }
+        .page-tab.active { background-color: #4f46e5; color: white; font-weight: 600; }
     </style>
 </head>
 <body>
-    <div class="top-bar p-4 flex justify-between items-center shadow-lg z-10">
-        <div>
-            <h1 class="text-2xl font-bold text-white">Website Preview</h1>
-            <p class="text-slate-400">Here is the website generated by the AI. You can download the source files below.</p>
+    <div class="editor-container">
+        <!-- Main Canvas & Toolbar -->
+        <div class="main-canvas">
+            <div class="top-toolbar flex items-center justify-between">
+                <div id="page-tabs" class="flex items-center gap-2">
+                    <!-- Page tabs will be inserted here -->
+                </div>
+                <div class="flex items-center gap-3">
+                    <button id="addTextBtn" class="bg-blue-600 text-white text-sm font-semibold py-1 px-3 rounded-md hover:bg-blue-700">Add Text</button>
+                    <button id="downloadBtn" class="bg-indigo-600 text-white text-sm font-bold py-1 px-3 rounded-lg hover:bg-indigo-700">Download HTML</button>
+                </div>
+            </div>
+            <div class="iframe-wrapper">
+                <iframe id="editor-frame"></iframe>
+            </div>
         </div>
-        <div class="flex items-center gap-4">
-            <button id="downloadHtmlBtn" class="bg-blue-600 text-white font-bold py-2 px-4 rounded-lg">Download HTML</button>
-            <button id="downloadCssBtn" class="bg-green-600 text-white font-bold py-2 px-4 rounded-lg">Download CSS</button>
-            <button id="downloadJsBtn" class="bg-yellow-500 text-black font-bold py-2 px-4 rounded-lg">Download JS</button>
+
+        <!-- Properties Panel -->
+        <div id="properties-panel" class="properties-panel">
+            <!-- This will be populated dynamically -->
         </div>
-    </div>
-    <div class="preview-area p-4">
-        <iframe id="preview-frame" class="w-full h-full bg-white"></iframe>
     </div>
 
     <script>
+        let websiteData = {};
+        let selectedElement = null;
+        let selectedElementId = null;
+        let currentPageId = null;
+
         document.addEventListener('DOMContentLoaded', () => {
             const storedData = localStorage.getItem('websiteData');
-            if (!storedData) {
-                alert("No website data found to preview.");
-                return;
+            if (storedData) {
+                websiteData = JSON.parse(storedData);
+                currentPageId = websiteData.pages[0]?.id;
+                renderPageTabs();
+                renderWebsite();
+                renderPropertiesPanel();
+            } else {
+                alert("No website data found. Please start over.");
             }
-
-            const websiteData = JSON.parse(storedData);
-            const { html, css, javascript } = websiteData;
-
-            // Combine files for preview
-            const fullHtml = `
-                ${html.replace('</head>', `<style>${css}</style></head>`)}
-            `.replace('</body>', `<script>${javascript}<\/script></body>`);
-
-            const previewFrame = document.getElementById('preview-frame');
-            previewFrame.srcdoc = fullHtml;
-
-            // Setup download buttons
-            document.getElementById('downloadHtmlBtn').addEventListener('click', () => downloadFile('index.html', html, 'text/html'));
-            document.getElementById('downloadCssBtn').addEventListener('click', () => downloadFile('style.css', css, 'text/css'));
-            document.getElementById('downloadJsBtn').addEventListener('click', () => downloadFile('script.js', javascript, 'application/javascript'));
+            
+            document.getElementById('downloadBtn').addEventListener('click', downloadHTML);
+            document.getElementById('addTextBtn').addEventListener('click', addElementToPage('text'));
         });
 
-        function downloadFile(filename, content, mimeType) {
-            const blob = new Blob([content], { type: mimeType });
+        // --- RENDER FUNCTIONS ---
+        function renderPageTabs() {
+            const tabsContainer = document.getElementById('page-tabs');
+            tabsContainer.innerHTML = websiteData.pages.map(page => `
+                <div class="page-tab ${page.id === currentPageId ? 'active' : ''}" onclick="switchPage('${page.id}')">
+                    ${page.name}
+                </div>
+            `).join('');
+        }
+
+        function renderWebsite() {
+            const frame = document.getElementById('editor-frame');
+            const page = websiteData.pages.find(p => p.id === currentPageId);
+            if (!page) return;
+
+            const global = websiteData.globalStyles;
+            const googleFont = global.fontFamily.split(',')[0].replace(/'/g, "").replace(/\s/g, '+');
+            
+            let hoverStyles = '';
+            page.elements.forEach(el => {
+                if (el.hoverStyles && (el.hoverStyles.backgroundColor || el.hoverStyles.transform)) {
+                    hoverStyles += `#${el.id}:hover {
+                        ${el.hoverStyles.backgroundColor ? `background-color: ${el.hoverStyles.backgroundColor} !important;` : ''}
+                        ${el.hoverStyles.transform ? `transform: ${el.hoverStyles.transform};` : ''}
+                        transition: all 0.2s ease-in-out;
+                    }`;
+                }
+            });
+
+            let html = `
+            <head>
+                <link rel="preconnect" href="https://fonts.googleapis.com">
+                <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+                <link href="https://fonts.googleapis.com/css2?family=${googleFont}:wght@400;700&display=swap" rel="stylesheet">
+                <style>
+                    :root {
+                        --background-color: ${global.backgroundColor}; --text-color: ${global.textColor};
+                        --primary-color: ${global.primaryColor}; --secondary-color: ${global.secondaryColor};
+                        --accent-color: ${global.accentColor};
+                    }
+                    body { font-family: ${global.fontFamily}; background-color: var(--background-color); color: var(--text-color); margin: 0; position: relative; min-height: 100vh;}
+                    .editable-element { cursor: pointer; box-sizing: border-box; }
+                    ${hoverStyles}
+                </style>
+            </head>
+            <body>`;
+
+            html += `<div id="page-container" style="position: relative; width: 100%; height: 100vh; background-color: ${page.styles.backgroundColor || 'transparent'};">`;
+            
+            page.elements.forEach(el => {
+                let styles = 'position: absolute;';
+                for (const [key, value] of Object.entries(el.styles)) {
+                    const cssKey = key.replace(/[A-Z]/g, letter => `-${letter.toLowerCase()}`);
+                    styles += `${cssKey}: ${value}; `;
+                }
+
+                const content = el.content.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+                if(el.type === 'image') {
+                     html += `<img id="${el.id}" src="${el.src || ''}" class="editable-element" style="${styles}">`;
+                } else if(el.type === 'button') {
+                     html += `<button id="${el.id}" class="editable-element" style="${styles}">${content}</button>`;
+                }
+                else {
+                    html += `<div id="${el.id}" class="editable-element" style="${styles}">${el.content}</div>`; // Allow HTML for text
+                }
+            });
+
+            html += `</div>`;
+
+             html += `<script>
+                document.addEventListener('click', (e) => {
+                    if (e.target.classList.contains('editable-element')) {
+                        window.parent.postMessage({ type: 'elementSelected', id: e.target.id }, '*');
+                    }
+                });
+            <\/script></body>`;
+
+            frame.srcdoc = html;
+        }
+        
+        function renderPropertiesPanel() {
+            const panel = document.getElementById('properties-panel');
+            let content = '';
+
+            if (selectedElement) {
+                content += `<h2 class="text-lg font-bold mb-4 text-white">${selectedElement.type.charAt(0).toUpperCase() + selectedElement.type.slice(1)} Properties</h2>`;
+                
+                // Content & Style
+                content += `<details open class="panel-section"><summary>Content & Style</summary><div class="space-y-3 mt-2">`;
+                content += createTextControl('Content', 'content', selectedElement.content);
+                content += createColorControl('Color', 'styles.color', selectedElement.styles.color);
+                content += createColorControl('Background', 'styles.backgroundColor', selectedElement.styles.backgroundColor);
+                content += createRangeControl('Font Size', 'styles.fontSize', selectedElement.styles.fontSize, 0.5, 10, 0.1, 'rem');
+                content += createRangeControl('Border Radius', 'styles.borderRadius', selectedElement.styles.borderRadius, 0, 5, 0.1, 'rem');
+                content += `</div></details>`;
+                
+                // Layout
+                content += `<details open class="panel-section"><summary>Layout</summary><div class="prop-grid mt-2">`;
+                content += createRangeControl('X Pos', 'styles.left', selectedElement.styles.left, 0, 100, 1, '%');
+                content += createRangeControl('Y Pos', 'styles.top', selectedElement.styles.top, 0, 100, 1, '%');
+                content += createRangeControl('Width', 'styles.width', selectedElement.styles.width, 0, 100, 1, '%');
+                content += createRangeControl('Height', 'styles.height', selectedElement.styles.height, 0, 100, 1, '%');
+                content += `</div></details>`;
+                
+                // Actions
+                content += `<details class="panel-section"><summary>Actions</summary><div class="space-y-3 mt-2">`;
+                content += createTextControl('Link URL', 'link', selectedElement.link);
+                content += createColorControl('Hover BG Color', 'hoverStyles.backgroundColor', selectedElement.hoverStyles?.backgroundColor);
+                content += `</div></details>`;
+            }
+
+            // Global styles
+            content += `<details class="panel-section"><summary>Global Styles</summary><div class="space-y-3 mt-2">`;
+            content += createFontSelect('Font Family', 'globalStyles.fontFamily', websiteData.globalStyles.fontFamily);
+            content += createColorControl('Background', 'globalStyles.backgroundColor', websiteData.globalStyles.backgroundColor);
+            content += createColorControl('Text', 'globalStyles.textColor', websiteData.globalStyles.textColor);
+            content += createColorControl('Primary', 'globalStyles.primaryColor', websiteData.globalStyles.primaryColor);
+            content += createColorControl('Secondary', 'globalStyles.secondaryColor', websiteData.globalStyles.secondaryColor);
+            content += `</div></details>`;
+            
+            panel.innerHTML = content;
+            addPanelEventListeners();
+        }
+
+        // --- PROPERTY CONTROLS HELPERS ---
+        function createTextControl(label, key, value) {
+            return `<div><label class="prop-label">${label}</label><input type="text" class="prop-input" data-key="${key}" value="${value || ''}"></div>`;
+        }
+        function createColorControl(label, key, value) {
+            return `<div><label class="prop-label">${label}</label><input type="color" class="prop-input" data-key="${key}" value="${value || '#ffffff'}"></div>`;
+        }
+        function createRangeControl(label, key, value, min, max, step, unit) {
+            const numericValue = parseFloat(value) || 0;
+            return `<div><label class="prop-label">${label} (${numericValue}${unit})</label><input type="range" class="w-full" data-key="${key}" data-unit="${unit}" min="${min}" max="${max}" step="${step}" value="${numericValue}"></div>`;
+        }
+        function createFontSelect(label, key, value) {
+             const fonts = ["'Inter', sans-serif", "'Poppins', sans-serif", "'Roboto', sans-serif", "'Lora', serif", "'Playfair Display', serif"];
+             let options = fonts.map(f => `<option value="${f}" ${f === value ? 'selected' : ''}>${f.split(',')[0].replace(/'/g, '')}</option>`).join('');
+             return `<div><label class="prop-label">${label}</label><select class="prop-input" data-key="${key}">${options}</select></div>`;
+        }
+
+
+        // --- EVENT LISTENERS & HANDLERS ---
+        function addPanelEventListeners() {
+            document.querySelectorAll('#properties-panel .prop-input, #properties-panel input[type="range"], #properties-panel select').forEach(input => {
+                input.addEventListener('input', (e) => handlePropertyChange(e));
+            });
+        }
+        
+        function handlePropertyChange(e) {
+            const keyPath = e.target.dataset.key;
+            let value = e.target.value;
+
+            const keys = keyPath.split('.');
+            let targetObject = websiteData;
+            for(let i=0; i < keys.length - 1; i++) {
+                targetObject = targetObject[keys[i]] = targetObject[keys[i]] || {};
+            }
+            
+            if (keyPath.startsWith('globalStyles')) {
+                 targetObject = websiteData.globalStyles;
+            } else if (selectedElement) {
+                 if(keys[0] === 'styles') targetObject = selectedElement.styles;
+                 else if(keys[0] === 'hoverStyles') targetObject = selectedElement.hoverStyles = selectedElement.hoverStyles || {};
+                 else targetObject = selectedElement;
+            } else { return; }
+
+            const finalKey = keys[keys.length - 1];
+
+            if(e.target.type === 'range') {
+                const unit = e.target.dataset.unit || 'rem';
+                e.target.previousElementSibling.textContent = `${e.target.name} (${value}${unit})`;
+                value += unit;
+            }
+            
+            targetObject[finalKey] = value;
+            
+            saveAndRerender();
+        }
+        
+        window.addEventListener('message', (event) => {
+            if (event.data.type === 'elementSelected') {
+                selectedElementId = event.data.id;
+                const page = websiteData.pages.find(p => p.id === currentPageId);
+                selectedElement = page.elements.find(el => el.id === selectedElementId);
+                
+                const frameDoc = document.getElementById('editor-frame').contentDocument;
+                frameDoc.querySelectorAll('.selected-in-frame').forEach(el => el.classList.remove('selected-in-frame'));
+                if (selectedElement) {
+                    frameDoc.getElementById(selectedElementId)?.classList.add('selected-in-frame');
+                }
+                
+                renderPropertiesPanel();
+            }
+        });
+
+        interact('#editor-frame').on('load', function (event) {
+            const frameDoc = event.target.contentDocument;
+            interact('.editable-element', { context: frameDoc })
+                .draggable({
+                    listeners: {
+                        move(event) {
+                            const target = event.target;
+                            const x = (parseFloat(target.dataset.x) || 0) + event.dx;
+                            const y = (parseFloat(target.dataset.y) || 0) + event.dy;
+                            target.style.transform = `translate(${x}px, ${y}px)`;
+                            target.dataset.x = x;
+                            target.dataset.y = y;
+                        },
+                        end(event) {
+                            const target = event.target;
+                            const elementData = findElementById(target.id);
+                            if (!elementData) return;
+                            const parentRect = frameDoc.getElementById('page-container').getBoundingClientRect();
+                            const x = (target.offsetLeft + (parseFloat(target.dataset.x) || 0));
+                            const y = (target.offsetTop + (parseFloat(target.dataset.y) || 0));
+                            elementData.styles.left = `${(x / parentRect.width * 100).toFixed(2)}%`;
+                            elementData.styles.top = `${(y / parentRect.height * 100).toFixed(2)}%`;
+                            target.style.transform = '';
+                            target.dataset.x = 0; target.dataset.y = 0;
+                            saveAndRerender();
+                        }
+                    }
+                })
+                .resizable({
+                    edges: { left: true, right: true, bottom: true, top: true },
+                    listeners: {
+                        move: function (event) {
+                            let { x, y } = event.target.dataset;
+                            x = (parseFloat(x) || 0); y = (parseFloat(y) || 0);
+                            Object.assign(event.target.style, { width: `${event.rect.width}px`, height: `${event.rect.height}px` });
+                        },
+                         end(event) {
+                            const target = event.target;
+                            const elementData = findElementById(target.id);
+                            if (!elementData) return;
+                            const parentRect = frameDoc.getElementById('page-container').getBoundingClientRect();
+                            elementData.styles.width = `${(event.rect.width / parentRect.width * 100).toFixed(2)}%`;
+                            elementData.styles.height = `${(event.rect.height / parentRect.height * 100).toFixed(2)}%`;
+                            saveAndRerender();
+                         }
+                    }
+                })
+        });
+        
+        function switchPage(pageId) {
+            currentPageId = pageId;
+            selectedElement = null;
+            selectedElementId = null;
+            renderPageTabs();
+            renderWebsite();
+            renderPropertiesPanel();
+        }
+
+        function findElementById(id) {
+             const page = websiteData.pages.find(p => p.id === currentPageId);
+             return page?.elements.find(el => el.id === id);
+        }
+
+        function saveAndRerender() {
+            localStorage.setItem('websiteData', JSON.stringify(websiteData));
+            renderWebsite();
+            setTimeout(() => {
+                 if (selectedElementId) {
+                     const frameDoc = document.getElementById('editor-frame').contentDocument;
+                     frameDoc.getElementById(selectedElementId)?.classList.add('selected-in-frame');
+                 }
+            }, 100);
+        }
+        
+        function addElementToPage(type) {
+            return () => {
+                const page = websiteData.pages.find(p => p.id === currentPageId);
+                if(!page) return;
+                
+                const newElement = {
+                    id: `el-${Date.now()}`, type: type, link: '#',
+                    content: type === 'text' ? 'New Text Block' : 'Click Me',
+                    styles: {
+                         position: "absolute", top: "40%", left: "40%", width: "20%", height: "10%",
+                         color: "var(--text-color)", backgroundColor: type === 'button' ? 'var(--primary-color)' : 'transparent',
+                         fontSize: '1rem', textAlign: 'center', borderRadius: '0.25rem'
+                    },
+                    hoverStyles: {}
+                };
+                page.elements.push(newElement);
+                saveAndRerender();
+            }
+        }
+        
+        function downloadHTML() {
+            const global = websiteData.globalStyles;
+            const googleFont = global.fontFamily.split(',')[0].replace(/'/g, "").replace(/\s/g, '+');
+
+            let finalHtml = `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>My Awesome Website</title>
+                <link rel="preconnect" href="https://fonts.googleapis.com">
+                <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+                <link href="https://fonts.googleapis.com/css2?family=${googleFont}:wght@400;700&display=swap" rel="stylesheet">
+                <style>
+                :root {
+                    --background-color: ${global.backgroundColor}; --text-color: ${global.textColor};
+                    --primary-color: ${global.primaryColor}; --secondary-color: ${global.secondaryColor};
+                    --accent-color: ${global.accentColor};
+                }
+                html { scroll-behavior: smooth; }
+                body { font-family: ${global.fontFamily}; background-color: var(--background-color); color: var(--text-color); margin: 0;}
+                nav { position: fixed; top: 0; left: 0; right: 0; background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(10px); padding: 1rem 2rem; z-index: 1000; display: flex; justify-content: center; gap: 1.5rem; }
+                nav a { color: var(--text-color); text-decoration: none; font-weight: 500; transition: color 0.2s ease; }
+                nav a:hover { color: var(--accent-color); }
+                section { min-height: 100vh; position: relative; }
+                </style>
+                <style id="hover-styles"></style>
+                </head><body>
+                <nav>${websiteData.pages.map(p => `<a href="#${p.id}">${p.name}</a>`).join('')}</nav>
+            `;
+            
+            let hoverCss = '';
+
+            websiteData.pages.forEach(page => {
+                 finalHtml += `<section id="${page.id}" style="background-color: ${page.styles.backgroundColor || 'transparent'}; padding: ${page.styles.padding || '0'};">`;
+                 page.elements.forEach(el => {
+                    let styles = '';
+                    for (const [key, value] of Object.entries(el.styles)) {
+                        const cssKey = key.replace(/[A-Z]/g, letter => `-${letter.toLowerCase()}`);
+                        styles += `${cssKey}: ${value}; `;
+                    }
+                    if (el.hoverStyles && (el.hoverStyles.backgroundColor || el.hoverStyles.transform)) {
+                         hoverCss += `#${el.id}:hover {
+                            ${el.hoverStyles.backgroundColor ? `background-color: ${el.hoverStyles.backgroundColor} !important;` : ''}
+                            ${el.hoverStyles.transform ? `transform: ${el.hoverStyles.transform};` : ''}
+                            transition: all 0.2s ease-in-out;
+                        }`;
+                    }
+
+                    const elementHtml = el.type === 'image' ? `<img id="${el.id}" src="${el.src || ''}" style="${styles}">`
+                                      : el.type === 'button' ? `<button id="${el.id}" style="${styles}">${el.content}</button>`
+                                      : `<div id="${el.id}" style="${styles}">${el.content}</div>`;
+                    
+                    finalHtml += el.link && el.link !== '#' ? `<a href="${el.link}" target="_blank">${elementHtml}</a>` : elementHtml;
+                 });
+                 finalHtml += `</section>`;
+            });
+
+            finalHtml = finalHtml.replace('<style id="hover-styles"></style>', `<style>${hoverCss}</style>`);
+
+            finalHtml += `</body></html>`;
+
+            const blob = new Blob([finalHtml], { type: 'text/html' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = filename;
-            document.body.appendChild(a);
+            a.download = `website.html`;
             a.click();
-            document.body.removeChild(a);
             URL.revokeObjectURL(url);
         }
+
     </script>
 </body>
-</html>''')
+</html>
+''')
 
 
 if __name__ == '__main__':
