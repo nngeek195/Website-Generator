@@ -23,6 +23,30 @@ IMAGES_DIR = os.path.join(BASE_DIR, 'images')
 if not os.path.exists(IMAGES_DIR):
     os.makedirs(IMAGES_DIR)
 
+@app.route('/upload_image', methods=['POST'])
+def upload_image():
+    if 'file' not in request.files:
+        return jsonify({"error": "No file part"}), 400
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({"error": "No selected file"}), 400
+    if file:
+        try:
+            # Sanitize filename
+            filename = f"user_upload_{int(time.time())}_{file.filename}"
+            filepath = os.path.join(IMAGES_DIR, filename)
+            
+            with Image.open(file.stream) as img:
+                img.thumbnail((1920, 1080), Image.Resampling.LANCZOS)
+                img.save(filepath, 'JPEG', quality=85, optimize=True)
+
+            web_path = os.path.join('images', filename).replace('\\', '/')
+            return jsonify({"src": web_path})
+        except Exception as e:
+            print(f"Error saving uploaded image: {e}")
+            return jsonify({"error": "Failed to process image"}), 500
+
+
 # --- Helper function for exponential backoff ---
 def api_call_with_backoff(url, headers, payload, max_retries=5, initial_delay=1):
     for i in range(max_retries):
@@ -412,77 +436,75 @@ def generate_website():
         return jsonify({"error": "Invalid request data"}), 400
 
     prompt = f"""
-    You are an expert web developer creating a structured JSON representation of a website.
+    You are an expert web designer using a **responsive, hierarchical component structure**. Your task is to generate a JSON object representing a beautiful, modern website.
+
+    **CRITICAL RULE:** Do NOT use `position: "absolute"`. All layouts must be responsive using Flexbox or Grid.
 
     **Website Description:** "{description}"
     **Pages to Create:** {', '.join(pages)}
 
-    **INSTRUCTIONS:**
-    Your output MUST be a single, raw JSON object. This object will be the data model for a web editor.
-    
     **JSON Structure:**
     {{
       "globalStyles": {{
-        "theme": "dark",
-        "fontFamily": "'Inter', sans-serif",
-        "backgroundColor": "#0f172a",
-        "textColor": "#e2e8f0",
-        "primaryColor": "#4f46e5",
-        "secondaryColor": "#1e293b",
-        "accentColor": "#38bdf8"
+        "fontFamily": "'Poppins', sans-serif",
+        "backgroundColor": "#0b1120", "textColor": "#d1d5db",
+        "primaryColor": "#818cf8", "secondaryColor": "#1f2937", "accentColor": "#38bdf8"
       }},
-      "pages": [
-        // One object for each page in the list: {', '.join(pages)}
-      ]
+      "pages": [ /* One object for each page */ ]
     }}
 
-    **For each page object in the "pages" array, use this structure:**
+    **For each page object in "pages":**
     {{
-      "id": "page-unique-id", // e.g., "page-home", "page-about"
-      "name": "Page Name",   // e.g., "Home", "About Us"
+      "id": "page-home", "name": "Home",
       "styles": {{
-        "backgroundColor": "var(--secondary-color)",
-        "padding": "6rem 2rem"
+        "backgroundColor": "var(--background-color)",
+        "backgroundImage": "radial-gradient(circle at top right, rgba(124, 58, 237, 0.1), transparent 40%)"
       }},
-      "elements": [
-        // Array of element objects for this page
-      ]
+      "sections": [ /* One or more section objects */ ]
     }}
 
-    **For each element in the "elements" array, use this structure:**
+    **For each section object in "sections":**
     {{
-      "id": "el-unique-id", // e.g., "el-home-title", "el-about-image"
-      "type": "heading" | "text" | "button" | "image",
-      "content": "...", // Text for headings, paragraphs, or buttons. For images, this is an Unsplash search query.
-      "link": "#", // A URL link, default to "#"
+        "id": "sec-hero", "type": "section",
+        "styles": {{ "display": "flex", "flexDirection": "column", "alignItems": "center", "justifyContent": "center", "padding": "8rem 2rem", "minHeight": "100vh" }},
+        "children": [ /* One or more column objects */ ]
+    }}
+
+    **For each column object in "children":**
+    {{
+        "id": "col-hero-content", "type": "column",
+        "styles": {{ "display": "flex", "flexDirection": "column", "alignItems": "center", "gap": "1.5rem", "textAlign": "center" }},
+        "children": [ /* Array of element objects */ ]
+    }}
+
+    **For each element object in "children" (of a column):**
+    {{
+      "id": "el-hero-title",
+      "type": "heading", // "heading", "text", "button", or "image"
+      "content": "...", // Text content, or Unsplash search query for images.
       "styles": {{
-        "position": "absolute",
-        "top": "10%", "left": "15%", "width": "70%", "height": "20%",
-        "color": "var(--text-color)", "backgroundColor": "transparent", "fontSize": "3rem",
-        "textAlign": "center", "borderRadius": "0.5rem", "padding": "1rem 2rem", "border": "none"
-      }},
-      "hoverStyles": {{
-          "backgroundColor": "var(--primary-color)", "transform": "scale(1.05)"
+        "color": "var(--text-color)", "fontSize": "4rem", "fontWeight": "700",
+        "background": "linear-gradient(90deg, var(--accent-color), var(--primary-color))", "-webkit-background-clip": "text", "-webkit-text-fill-color": "transparent"
       }}
     }}
 
-    **TASK & LAYOUT RULES:**
-    1.  Generate the full JSON object following the schema above exactly.
-    2.  Create one page object for each page name provided.
-    3.  For each page, create at least 2-4 relevant elements (headings, text, images, buttons).
-    4.  **Use absolute positioning for ALL elements.** Provide sensible initial `top`, `left`, `width`, and `height` percentages.
-    5.  For `image` elements, the `content` field MUST be a concise, descriptive Unsplash search query.
-    6.  Use CSS variables like `var(--primary-color)` in element styles.
-    7.  For "Home", create a hero section with a large heading, a sub-paragraph, and a call-to-action button.
-    8.  For buttons, provide meaningful hoverStyles. For other elements, you can leave hoverStyles empty or with default values.
+    **DESIGN & LAYOUT GUIDELINES:**
+    1.  **Aesthetics First:** Create a stunning, high-end design. Use `Poppins` font. Use gradient text for main headings. Use glassmorphism for the nav bar.
+    2.  **Responsive Layout:**
+        * For sections with multiple columns of content (like an "About" page with text and an image), use a responsive grid: `{{ "display": "grid", "gridTemplateColumns": "1fr", "md:gridTemplateColumns": "1fr 1fr", "gap": "4rem", "alignItems": "center" }}`.
+        * All sections should be centered and have significant padding.
+    3.  **Professional Content:** Write engaging, relevant copy. No "lorem ipsum".
+    4.  **Buttons:** Style buttons with a gradient background and a hover effect: `"background": "linear-gradient(90deg, var(--primary-color), var(--accent-color))", "transition": "transform 0.2s", "hover:transform": "scale(1.05)"`.
+    5.  **Images:** `content` MUST be a creative Unsplash query. Add `borderRadius` and `boxShadow`.
+    6.  **Full Pages:** Each page should feel complete with at least one well-designed section. The Home page should have a hero section and maybe one other section.
 
-    Return ONLY the raw, perfectly formatted JSON. Do not include markdown, explanations, or any other text.
+    Return ONLY the raw, perfectly formatted JSON.
     """
     
     api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key={GEMINI_API_KEY}"
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.7, "responseMimeType": "application/json"}
+        "generationConfig": {"temperature": 0.8, "responseMimeType": "application/json"}
     }
     
     try:
@@ -515,21 +537,26 @@ def generate_website():
         if 'pages' not in website_data or 'globalStyles' not in website_data:
             raise ValueError("Generated JSON is missing required 'pages' or 'globalStyles' keys.")
 
-        # Process images
-        for page in website_data.get('pages', []):
-            for element in page.get('elements', []):
-                if element.get('type') == 'image':
-                    query = element.get('content')
+        def traverse_and_process_images(node):
+            if isinstance(node, dict):
+                if node.get('type') == 'image':
+                    query = node.get('content')
                     if query:
                         print(f"Fetching image for query '{query}'...")
                         image_url = search_unsplash_image(query)
                         if image_url:
-                            filename = f"{element['id']}.jpg"
+                            filename = f"{node['id']}.jpg"
                             local_path = download_image(image_url, filename)
-                            element['src'] = local_path # Add 'src' key with the local path
+                            node['src'] = local_path
                         else:
-                            element['src'] = f"https://placehold.co/600x400/1e293b/e2e8f0?text=Not+Found"
+                            node['src'] = f"https://placehold.co/600x400/1e293b/e2e8f0?text=Not+Found"
+                for key, value in node.items():
+                    traverse_and_process_images(value)
+            elif isinstance(node, list):
+                for item in node:
+                    traverse_and_process_images(item)
 
+        traverse_and_process_images(website_data['pages'])
 
         return jsonify(website_data)
 
@@ -564,7 +591,7 @@ def preview():
         .panel-section summary { font-weight: 600; color: #94a3b8; margin-bottom: 0.75rem; border-bottom: 1px solid #334155; padding-bottom: 0.5rem; cursor: pointer; }
         .prop-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.75rem; }
         .prop-label { font-size: 0.875rem; color: #cbd5e1; margin-bottom: 0.25rem; display: block; }
-        .prop-input { width: 100%; background-color: #1e293b; border: 1px solid #475569; color: white; border-radius: 0.375rem; padding: 0.5rem; font-size: 0.875rem; }
+        .prop-input, .prop-select { width: 100%; background-color: #1e293b; border: 1px solid #475569; color: white; border-radius: 0.375rem; padding: 0.5rem; font-size: 0.875rem; }
         .prop-input[type="color"] { padding: 0.125rem; height: 38px; }
         .selected-in-frame { outline: 3px solid #38bdf8 !important; outline-offset: 2px; box-shadow: 0 0 20px rgba(56, 189, 248, 0.5); }
         .page-tab { background-color: #334155; color: #cbd5e1; padding: 0.25rem 0.75rem; border-radius: 0.375rem; cursor: pointer; transition: all 0.2s ease; }
@@ -581,8 +608,16 @@ def preview():
                     <!-- Page tabs will be inserted here -->
                 </div>
                 <div class="flex items-center gap-3">
-                    <button id="addTextBtn" class="bg-blue-600 text-white text-sm font-semibold py-1 px-3 rounded-md hover:bg-blue-700">Add Text</button>
+                     <button id="addTextBtn" class="bg-blue-600 text-white text-sm font-semibold py-1 px-3 rounded-md hover:bg-blue-700 flex items-center gap-1">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16"><path d="M4.5 13.5A.5.5 0 0 1 4 13V2.5A.5.5 0 0 1 4.5 2h7a.5.5 0 0 1 0 1h-7v10h7a.5.5 0 0 1 0 1z"/><path d="M7 5.5a.5.5 0 0 0 .5.5h1a.5.5 0 0 0 0-1h-1a.5.5 0 0 0-.5.5M8 8a.5.5 0 0 1-.5-.5V6a.5.5 0 0 1 1 0v1.5A.5.5 0 0 1 8 8"/></svg>
+                        Text
+                    </button>
+                    <button id="addImageBtn" class="bg-green-600 text-white text-sm font-semibold py-1 px-3 rounded-md hover:bg-green-700 flex items-center gap-1">
+                       <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16"><path d="M6.002 5.5a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0"/><path d="M2.002 1a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V3a2 2 0 0 0-2-2zm12 1a1 1 0 0 1 1 1v6.5l-3.777-1.947a.5.5 0 0 0-.577.093l-3.71 3.71-2.66-1.772a.5.5 0 0 0-.63.062L1.002 12V3a1 1 0 0 1 1-1z"/></svg>
+                       Image
+                    </button>
                     <button id="downloadBtn" class="bg-indigo-600 text-white text-sm font-bold py-1 px-3 rounded-lg hover:bg-indigo-700">Download HTML</button>
+                    <input type="file" id="imageUpload" class="hidden" accept="image/*">
                 </div>
             </div>
             <div class="iframe-wrapper">
@@ -591,15 +626,12 @@ def preview():
         </div>
 
         <!-- Properties Panel -->
-        <div id="properties-panel" class="properties-panel">
-            <!-- This will be populated dynamically -->
-        </div>
+        <div id="properties-panel" class="properties-panel"></div>
     </div>
 
     <script>
         let websiteData = {};
         let selectedElement = null;
-        let selectedElementId = null;
         let currentPageId = null;
 
         document.addEventListener('DOMContentLoaded', () => {
@@ -608,27 +640,67 @@ def preview():
                 websiteData = JSON.parse(storedData);
                 currentPageId = websiteData.pages[0]?.id;
                 renderPageTabs();
-                renderWebsite();
-                renderPropertiesPanel();
+                renderWebsiteInFrame();
+                renderPropertiesPanel(); // Initial render for global styles
             } else {
                 alert("No website data found. Please start over.");
+                window.location.href = '/';
             }
             
             document.getElementById('downloadBtn').addEventListener('click', downloadHTML);
-            document.getElementById('addTextBtn').addEventListener('click', addElementToPage('text'));
+            document.getElementById('addTextBtn').addEventListener('click', () => addElementToPage('text'));
+            document.getElementById('addImageBtn').addEventListener('click', () => document.getElementById('imageUpload').click());
+            document.getElementById('imageUpload').addEventListener('change', handleImageUpload);
         });
 
-        // --- RENDER FUNCTIONS ---
-        function renderPageTabs() {
-            const tabsContainer = document.getElementById('page-tabs');
-            tabsContainer.innerHTML = websiteData.pages.map(page => `
-                <div class="page-tab ${page.id === currentPageId ? 'active' : ''}" onclick="switchPage('${page.id}')">
-                    ${page.name}
-                </div>
-            `).join('');
+        function generateStyleString(styles) {
+            let styleString = '';
+            const responsiveStyles = { base: '', md: '', lg: '' };
+            for (const [key, value] of Object.entries(styles)) {
+                const cssKey = key.replace(/[A-Z]/g, letter => `-${letter.toLowerCase()}`);
+                if (key.startsWith('md:')) {
+                    responsiveStyles.md += `${cssKey.substring(3)}: ${value}; `;
+                } else if (key.startsWith('lg:')) {
+                    responsiveStyles.lg += `${cssKey.substring(3)}: ${value}; `;
+                } else if (key.startsWith('hover:')) {
+                    // Hover styles handled separately
+                }
+                else {
+                    responsiveStyles.base += `${cssKey}: ${value}; `;
+                }
+            }
+            styleString += responsiveStyles.base;
+            if (responsiveStyles.md) styleString += `@media (min-width: 768px) { #${selectedElement?.id} { ${responsiveStyles.md} } }`;
+            if (responsiveStyles.lg) styleString += `@media (min-width: 1024px) { #${selectedElement?.id} { ${responsiveStyles.lg} } }`;
+            return styleString;
         }
 
-        function renderWebsite() {
+        function buildNode(nodeData) {
+            const el = document.createElement(nodeData.type === 'heading' ? `h${nodeData.level || 1}` : nodeData.type === 'image' ? 'img' : 'div');
+            el.id = nodeData.id;
+            el.className = 'editable-element';
+            
+            if(nodeData.type !== 'section' && nodeData.type !== 'column') el.setAttribute('contenteditable', 'true');
+            if(nodeData.type === 'image') el.src = nodeData.src || '';
+            
+            el.innerHTML = nodeData.content || '';
+
+            let styleString = '';
+            for (const [key, value] of Object.entries(nodeData.styles || {})) {
+                const cssKey = key.replace(/[A-Z]/g, letter => `-${letter.toLowerCase()}`);
+                if (!cssKey.startsWith('hover:')) {
+                    styleString += `${cssKey}: ${value}; `;
+                }
+            }
+            el.style.cssText = styleString;
+
+            if (nodeData.children) {
+                nodeData.children.forEach(child => el.appendChild(buildNode(child)));
+            }
+            return el;
+        }
+
+        function renderWebsiteInFrame() {
             const frame = document.getElementById('editor-frame');
             const page = websiteData.pages.find(p => p.id === currentPageId);
             if (!page) return;
@@ -636,19 +708,34 @@ def preview():
             const global = websiteData.globalStyles;
             const googleFont = global.fontFamily.split(',')[0].replace(/'/g, "").replace(/\s/g, '+');
             
-            let hoverStyles = '';
-            page.elements.forEach(el => {
-                if (el.hoverStyles && (el.hoverStyles.backgroundColor || el.hoverStyles.transform)) {
-                    hoverStyles += `#${el.id}:hover {
-                        ${el.hoverStyles.backgroundColor ? `background-color: ${el.hoverStyles.backgroundColor} !important;` : ''}
-                        ${el.hoverStyles.transform ? `transform: ${el.hoverStyles.transform};` : ''}
-                        transition: all 0.2s ease-in-out;
-                    }`;
-                }
+            let dynamicStyles = '';
+            
+            function collectDynamicStyles(nodes) {
+                nodes.forEach(node => {
+                    if (node.styles) {
+                        const hoverStyles = Object.entries(node.styles).filter(([k]) => k.startsWith('hover:'));
+                        if (hoverStyles.length > 0) {
+                            dynamicStyles += `#${node.id}:hover {`;
+                            hoverStyles.forEach(([k, v]) => {
+                                dynamicStyles += `${k.replace('hover:', '')}: ${v} !important;`;
+                            });
+                            dynamicStyles += `}`;
+                        }
+                    }
+                    if (node.children) {
+                        collectDynamicStyles(node.children);
+                    }
+                });
+            }
+            page.sections.forEach(section => collectDynamicStyles(section.children));
+
+            const bodyContent = document.createElement('body');
+            page.sections.forEach(sectionData => {
+                bodyContent.appendChild(buildNode(sectionData));
             });
 
-            let html = `
-            <head>
+            const html = `
+            <html><head>
                 <link rel="preconnect" href="https://fonts.googleapis.com">
                 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
                 <link href="https://fonts.googleapis.com/css2?family=${googleFont}:wght@400;700&display=swap" rel="stylesheet">
@@ -658,85 +745,45 @@ def preview():
                         --primary-color: ${global.primaryColor}; --secondary-color: ${global.secondaryColor};
                         --accent-color: ${global.accentColor};
                     }
-                    body { font-family: ${global.fontFamily}; background-color: var(--background-color); color: var(--text-color); margin: 0; position: relative; min-height: 100vh;}
-                    .editable-element { cursor: pointer; box-sizing: border-box; }
-                    ${hoverStyles}
+                    body { font-family: ${global.fontFamily}; background-color: var(--background-color); color: var(--text-color); margin: 0; }
+                    .editable-element { cursor: pointer; min-height: 20px;}
+                    [contenteditable]:focus { outline: 1px dashed var(--accent-color); }
+                    ${dynamicStyles}
                 </style>
-            </head>
-            <body>`;
-
-            html += `<div id="page-container" style="position: relative; width: 100%; height: 100vh; background-color: ${page.styles.backgroundColor || 'transparent'};">`;
-            
-            page.elements.forEach(el => {
-                let styles = 'position: absolute;';
-                for (const [key, value] of Object.entries(el.styles)) {
-                    const cssKey = key.replace(/[A-Z]/g, letter => `-${letter.toLowerCase()}`);
-                    styles += `${cssKey}: ${value}; `;
-                }
-
-                const content = el.content.replace(/</g, "&lt;").replace(/>/g, "&gt;");
-
-                if(el.type === 'image') {
-                     html += `<img id="${el.id}" src="${el.src || ''}" class="editable-element" style="${styles}">`;
-                } else if(el.type === 'button') {
-                     html += `<button id="${el.id}" class="editable-element" style="${styles}">${content}</button>`;
-                }
-                else {
-                    html += `<div id="${el.id}" class="editable-element" style="${styles}">${el.content}</div>`; // Allow HTML for text
-                }
-            });
-
-            html += `</div>`;
-
-             html += `<script>
-                document.addEventListener('click', (e) => {
-                    if (e.target.classList.contains('editable-element')) {
-                        window.parent.postMessage({ type: 'elementSelected', id: e.target.id }, '*');
-                    }
-                });
-            <\/script></body>`;
+            </head><body>${bodyContent.innerHTML}</body></html>`;
 
             frame.srcdoc = html;
+            frame.onload = () => {
+                const frameDoc = frame.contentDocument;
+                frameDoc.querySelectorAll('.editable-element').forEach(el => {
+                    el.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        window.parent.postMessage({ type: 'elementSelected', id: el.id }, '*');
+                    });
+                });
+            };
         }
-        
+
         function renderPropertiesPanel() {
             const panel = document.getElementById('properties-panel');
-            let content = '';
+            let content = ``;
 
             if (selectedElement) {
                 content += `<h2 class="text-lg font-bold mb-4 text-white">${selectedElement.type.charAt(0).toUpperCase() + selectedElement.type.slice(1)} Properties</h2>`;
-                
-                // Content & Style
                 content += `<details open class="panel-section"><summary>Content & Style</summary><div class="space-y-3 mt-2">`;
                 content += createTextControl('Content', 'content', selectedElement.content);
                 content += createColorControl('Color', 'styles.color', selectedElement.styles.color);
                 content += createColorControl('Background', 'styles.backgroundColor', selectedElement.styles.backgroundColor);
-                content += createRangeControl('Font Size', 'styles.fontSize', selectedElement.styles.fontSize, 0.5, 10, 0.1, 'rem');
-                content += createRangeControl('Border Radius', 'styles.borderRadius', selectedElement.styles.borderRadius, 0, 5, 0.1, 'rem');
                 content += `</div></details>`;
-                
-                // Layout
-                content += `<details open class="panel-section"><summary>Layout</summary><div class="prop-grid mt-2">`;
-                content += createRangeControl('X Pos', 'styles.left', selectedElement.styles.left, 0, 100, 1, '%');
-                content += createRangeControl('Y Pos', 'styles.top', selectedElement.styles.top, 0, 100, 1, '%');
-                content += createRangeControl('Width', 'styles.width', selectedElement.styles.width, 0, 100, 1, '%');
-                content += createRangeControl('Height', 'styles.height', selectedElement.styles.height, 0, 100, 1, '%');
-                content += `</div></details>`;
-                
-                // Actions
-                content += `<details class="panel-section"><summary>Actions</summary><div class="space-y-3 mt-2">`;
-                content += createTextControl('Link URL', 'link', selectedElement.link);
-                content += createColorControl('Hover BG Color', 'hoverStyles.backgroundColor', selectedElement.hoverStyles?.backgroundColor);
-                content += `</div></details>`;
+            } else {
+                content += `<h2 class="text-lg font-bold mb-4 text-white">Global Styles</h2>`;
             }
 
-            // Global styles
-            content += `<details class="panel-section"><summary>Global Styles</summary><div class="space-y-3 mt-2">`;
+            content += `<details open class="panel-section"><summary>Global Styles</summary><div class="space-y-3 mt-2">`;
             content += createFontSelect('Font Family', 'globalStyles.fontFamily', websiteData.globalStyles.fontFamily);
             content += createColorControl('Background', 'globalStyles.backgroundColor', websiteData.globalStyles.backgroundColor);
             content += createColorControl('Text', 'globalStyles.textColor', websiteData.globalStyles.textColor);
             content += createColorControl('Primary', 'globalStyles.primaryColor', websiteData.globalStyles.primaryColor);
-            content += createColorControl('Secondary', 'globalStyles.secondaryColor', websiteData.globalStyles.secondaryColor);
             content += `</div></details>`;
             
             panel.innerHTML = content;
@@ -744,26 +791,17 @@ def preview():
         }
 
         // --- PROPERTY CONTROLS HELPERS ---
-        function createTextControl(label, key, value) {
-            return `<div><label class="prop-label">${label}</label><input type="text" class="prop-input" data-key="${key}" value="${value || ''}"></div>`;
-        }
-        function createColorControl(label, key, value) {
-            return `<div><label class="prop-label">${label}</label><input type="color" class="prop-input" data-key="${key}" value="${value || '#ffffff'}"></div>`;
-        }
-        function createRangeControl(label, key, value, min, max, step, unit) {
-            const numericValue = parseFloat(value) || 0;
-            return `<div><label class="prop-label">${label} (${numericValue}${unit})</label><input type="range" class="w-full" data-key="${key}" data-unit="${unit}" min="${min}" max="${max}" step="${step}" value="${numericValue}"></div>`;
-        }
+        function createTextControl(label, key, value) { return `<div><label class="prop-label">${label}</label><input type="text" class="prop-input" data-key="${key}" value="${value || ''}"></div>`; }
+        function createColorControl(label, key, value) { return `<div><label class="prop-label">${label}</label><input type="color" class="prop-input" data-key="${key}" value="${value || '#ffffff'}"></div>`; }
         function createFontSelect(label, key, value) {
              const fonts = ["'Inter', sans-serif", "'Poppins', sans-serif", "'Roboto', sans-serif", "'Lora', serif", "'Playfair Display', serif"];
              let options = fonts.map(f => `<option value="${f}" ${f === value ? 'selected' : ''}>${f.split(',')[0].replace(/'/g, '')}</option>`).join('');
-             return `<div><label class="prop-label">${label}</label><select class="prop-input" data-key="${key}">${options}</select></div>`;
+             return `<div><label class="prop-label">${label}</label><select class="prop-select" data-key="${key}">${options}</select></div>`;
         }
-
 
         // --- EVENT LISTENERS & HANDLERS ---
         function addPanelEventListeners() {
-            document.querySelectorAll('#properties-panel .prop-input, #properties-panel input[type="range"], #properties-panel select').forEach(input => {
+            document.querySelectorAll('#properties-panel .prop-input, #properties-panel select').forEach(input => {
                 input.addEventListener('input', (e) => handlePropertyChange(e));
             });
         }
@@ -771,142 +809,116 @@ def preview():
         function handlePropertyChange(e) {
             const keyPath = e.target.dataset.key;
             let value = e.target.value;
-
             const keys = keyPath.split('.');
-            let targetObject = websiteData;
-            for(let i=0; i < keys.length - 1; i++) {
-                targetObject = targetObject[keys[i]] = targetObject[keys[i]] || {};
-            }
-            
+            let targetObject;
+
             if (keyPath.startsWith('globalStyles')) {
-                 targetObject = websiteData.globalStyles;
+                 targetObject = websiteData;
+                 keys.forEach(key => { targetObject = targetObject[key]; });
             } else if (selectedElement) {
-                 if(keys[0] === 'styles') targetObject = selectedElement.styles;
-                 else if(keys[0] === 'hoverStyles') targetObject = selectedElement.hoverStyles = selectedElement.hoverStyles || {};
-                 else targetObject = selectedElement;
+                 targetObject = selectedElement;
+                 keys.slice(0, -1).forEach(key => { targetObject = targetObject[key]; });
             } else { return; }
 
-            const finalKey = keys[keys.length - 1];
-
-            if(e.target.type === 'range') {
-                const unit = e.target.dataset.unit || 'rem';
-                e.target.previousElementSibling.textContent = `${e.target.name} (${value}${unit})`;
-                value += unit;
-            }
-            
-            targetObject[finalKey] = value;
-            
+            targetObject[keys[keys.length - 1]] = value;
             saveAndRerender();
         }
         
         window.addEventListener('message', (event) => {
             if (event.data.type === 'elementSelected') {
-                selectedElementId = event.data.id;
-                const page = websiteData.pages.find(p => p.id === currentPageId);
-                selectedElement = page.elements.find(el => el.id === selectedElementId);
+                const elementId = event.data.id;
+                selectedElement = findElementById(elementId);
                 
                 const frameDoc = document.getElementById('editor-frame').contentDocument;
                 frameDoc.querySelectorAll('.selected-in-frame').forEach(el => el.classList.remove('selected-in-frame'));
                 if (selectedElement) {
-                    frameDoc.getElementById(selectedElementId)?.classList.add('selected-in-frame');
+                    frameDoc.getElementById(elementId)?.classList.add('selected-in-frame');
                 }
-                
                 renderPropertiesPanel();
             }
         });
 
-        interact('#editor-frame').on('load', function (event) {
-            const frameDoc = event.target.contentDocument;
-            interact('.editable-element', { context: frameDoc })
-                .draggable({
-                    listeners: {
-                        move(event) {
-                            const target = event.target;
-                            const x = (parseFloat(target.dataset.x) || 0) + event.dx;
-                            const y = (parseFloat(target.dataset.y) || 0) + event.dy;
-                            target.style.transform = `translate(${x}px, ${y}px)`;
-                            target.dataset.x = x;
-                            target.dataset.y = y;
-                        },
-                        end(event) {
-                            const target = event.target;
-                            const elementData = findElementById(target.id);
-                            if (!elementData) return;
-                            const parentRect = frameDoc.getElementById('page-container').getBoundingClientRect();
-                            const x = (target.offsetLeft + (parseFloat(target.dataset.x) || 0));
-                            const y = (target.offsetTop + (parseFloat(target.dataset.y) || 0));
-                            elementData.styles.left = `${(x / parentRect.width * 100).toFixed(2)}%`;
-                            elementData.styles.top = `${(y / parentRect.height * 100).toFixed(2)}%`;
-                            target.style.transform = '';
-                            target.dataset.x = 0; target.dataset.y = 0;
-                            saveAndRerender();
-                        }
-                    }
-                })
-                .resizable({
-                    edges: { left: true, right: true, bottom: true, top: true },
-                    listeners: {
-                        move: function (event) {
-                            let { x, y } = event.target.dataset;
-                            x = (parseFloat(x) || 0); y = (parseFloat(y) || 0);
-                            Object.assign(event.target.style, { width: `${event.rect.width}px`, height: `${event.rect.height}px` });
-                        },
-                         end(event) {
-                            const target = event.target;
-                            const elementData = findElementById(target.id);
-                            if (!elementData) return;
-                            const parentRect = frameDoc.getElementById('page-container').getBoundingClientRect();
-                            elementData.styles.width = `${(event.rect.width / parentRect.width * 100).toFixed(2)}%`;
-                            elementData.styles.height = `${(event.rect.height / parentRect.height * 100).toFixed(2)}%`;
-                            saveAndRerender();
-                         }
-                    }
-                })
-        });
-        
         function switchPage(pageId) {
             currentPageId = pageId;
             selectedElement = null;
-            selectedElementId = null;
             renderPageTabs();
-            renderWebsite();
+            renderWebsiteInFrame();
             renderPropertiesPanel();
+        }
+
+        function findNodeById(nodes, id) {
+            for (const node of nodes) {
+                if (node.id === id) return node;
+                if (node.children) {
+                    const found = findNodeById(node.children, id);
+                    if (found) return found;
+                }
+            }
+            return null;
         }
 
         function findElementById(id) {
              const page = websiteData.pages.find(p => p.id === currentPageId);
-             return page?.elements.find(el => el.id === id);
+             if (!page) return null;
+             for (const section of page.sections) {
+                 const found = findNodeById([section], id);
+                 if (found) return found;
+             }
+             return null;
         }
 
         function saveAndRerender() {
             localStorage.setItem('websiteData', JSON.stringify(websiteData));
-            renderWebsite();
+            renderWebsiteInFrame();
             setTimeout(() => {
-                 if (selectedElementId) {
+                 if (selectedElement) {
                      const frameDoc = document.getElementById('editor-frame').contentDocument;
-                     frameDoc.getElementById(selectedElementId)?.classList.add('selected-in-frame');
+                     frameDoc.getElementById(selectedElement.id)?.classList.add('selected-in-frame');
                  }
-            }, 100);
+            }, 150);
         }
         
         function addElementToPage(type) {
-            return () => {
-                const page = websiteData.pages.find(p => p.id === currentPageId);
-                if(!page) return;
-                
-                const newElement = {
-                    id: `el-${Date.now()}`, type: type, link: '#',
-                    content: type === 'text' ? 'New Text Block' : 'Click Me',
-                    styles: {
-                         position: "absolute", top: "40%", left: "40%", width: "20%", height: "10%",
-                         color: "var(--text-color)", backgroundColor: type === 'button' ? 'var(--primary-color)' : 'transparent',
-                         fontSize: '1rem', textAlign: 'center', borderRadius: '0.25rem'
-                    },
-                    hoverStyles: {}
-                };
-                page.elements.push(newElement);
-                saveAndRerender();
+            const page = websiteData.pages.find(p => p.id === currentPageId);
+            if(!page || !page.sections.length || !page.sections[0].children.length) return;
+            
+            const firstColumn = page.sections[0].children[0];
+
+            const newElement = {
+                id: `el-${Date.now()}`, type: type,
+                content: type === 'text' ? 'New editable text block.' : 'Click Me',
+                styles: type === 'image' ? { width: '100%', height: 'auto', borderRadius: '0.75rem'} : { padding: '0.5rem 1rem', borderRadius: '0.5rem' },
+            };
+
+            if (type === 'image') {
+                newElement.content = 'abstract art'; // Placeholder query
+                newElement.src = 'https://placehold.co/400x300';
             }
+            
+            firstColumn.children.push(newElement);
+            saveAndRerender();
+        }
+
+        function handleImageUpload(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const page = websiteData.pages.find(p => p.id === currentPageId);
+                if(!page || !page.sections.length || !page.sections[0].children.length) return;
+                const firstColumn = page.sections[0].children[0];
+
+                 const newElement = {
+                    id: `el-${Date.now()}`, type: 'image',
+                    content: 'Uploaded Image',
+                    src: e.target.result,
+                    styles: { width: '100%', height: 'auto', borderRadius: '0.75rem', marginTop: '1rem' }
+                };
+                firstColumn.children.push(newElement);
+                saveAndRerender();
+            };
+            reader.readAsDataURL(file);
         }
         
         function downloadHTML() {
@@ -916,9 +928,10 @@ def preview():
             let finalHtml = `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
                 <meta name="viewport" content="width=device-width, initial-scale=1.0">
                 <title>My Awesome Website</title>
+                 <script src="https://cdn.tailwindcss.com"></script>
                 <link rel="preconnect" href="https://fonts.googleapis.com">
                 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-                <link href="https://fonts.googleapis.com/css2?family=${googleFont}:wght@400;700&display=swap" rel="stylesheet">
+                <link href="https://fonts.googleapis.com/css2?family=${googleFont.replace(/ /g, '+')}:wght@400;700&display=swap" rel="stylesheet">
                 <style>
                 :root {
                     --background-color: ${global.backgroundColor}; --text-color: ${global.textColor};
@@ -927,44 +940,16 @@ def preview():
                 }
                 html { scroll-behavior: smooth; }
                 body { font-family: ${global.fontFamily}; background-color: var(--background-color); color: var(--text-color); margin: 0;}
-                nav { position: fixed; top: 0; left: 0; right: 0; background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(10px); padding: 1rem 2rem; z-index: 1000; display: flex; justify-content: center; gap: 1.5rem; }
-                nav a { color: var(--text-color); text-decoration: none; font-weight: 500; transition: color 0.2s ease; }
-                nav a:hover { color: var(--accent-color); }
-                section { min-height: 100vh; position: relative; }
                 </style>
-                <style id="hover-styles"></style>
                 </head><body>
-                <nav>${websiteData.pages.map(p => `<a href="#${p.id}">${p.name}</a>`).join('')}</nav>
             `;
             
-            let hoverCss = '';
-
+            // Build body from JSON
             websiteData.pages.forEach(page => {
-                 finalHtml += `<section id="${page.id}" style="background-color: ${page.styles.backgroundColor || 'transparent'}; padding: ${page.styles.padding || '0'};">`;
-                 page.elements.forEach(el => {
-                    let styles = '';
-                    for (const [key, value] of Object.entries(el.styles)) {
-                        const cssKey = key.replace(/[A-Z]/g, letter => `-${letter.toLowerCase()}`);
-                        styles += `${cssKey}: ${value}; `;
-                    }
-                    if (el.hoverStyles && (el.hoverStyles.backgroundColor || el.hoverStyles.transform)) {
-                         hoverCss += `#${el.id}:hover {
-                            ${el.hoverStyles.backgroundColor ? `background-color: ${el.hoverStyles.backgroundColor} !important;` : ''}
-                            ${el.hoverStyles.transform ? `transform: ${el.hoverStyles.transform};` : ''}
-                            transition: all 0.2s ease-in-out;
-                        }`;
-                    }
-
-                    const elementHtml = el.type === 'image' ? `<img id="${el.id}" src="${el.src || ''}" style="${styles}">`
-                                      : el.type === 'button' ? `<button id="${el.id}" style="${styles}">${el.content}</button>`
-                                      : `<div id="${el.id}" style="${styles}">${el.content}</div>`;
-                    
-                    finalHtml += el.link && el.link !== '#' ? `<a href="${el.link}" target="_blank">${elementHtml}</a>` : elementHtml;
+                 page.sections.forEach(section => {
+                    finalHtml += buildNodeForDownload(section);
                  });
-                 finalHtml += `</section>`;
             });
-
-            finalHtml = finalHtml.replace('<style id="hover-styles"></style>', `<style>${hoverCss}</style>`);
 
             finalHtml += `</body></html>`;
 
@@ -975,6 +960,42 @@ def preview():
             a.download = `website.html`;
             a.click();
             URL.revokeObjectURL(url);
+        }
+        
+        function buildNodeForDownload(nodeData) {
+            const typeMap = {
+                section: 'section',
+                column: 'div',
+                heading: `h${nodeData.level || 1}`,
+                text: 'p',
+                button: 'button',
+                image: 'img'
+            };
+            const tagName = typeMap[nodeData.type] || 'div';
+            let classes = ``; // In a real scenario, you'd map styles to tailwind classes
+            let inlineStyles = '';
+            for(const [key, val] of Object.entries(nodeData.styles || {})) {
+                inlineStyles += `${key.replace(/[A-Z]/g, letter => `-${letter.toLowerCase()}`)}: ${val};`;
+            }
+
+            let elementHtml = `<${tagName} id="${nodeData.id}" style="${inlineStyles}" class="${classes}">`;
+            if(nodeData.type === 'image') {
+                 elementHtml = `<${tagName} id="${nodeData.id}" src="${nodeData.src}" style="${inlineStyles}" class="${classes}">`;
+            } else {
+                elementHtml += nodeData.content || '';
+            }
+
+
+            if (nodeData.children) {
+                nodeData.children.forEach(child => {
+                    elementHtml += buildNodeForDownload(child);
+                });
+            }
+            if(nodeData.type !== 'image'){
+                elementHtml += `</${tagName}>`;
+            }
+
+            return elementHtml;
         }
 
     </script>
