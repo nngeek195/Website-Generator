@@ -4,6 +4,7 @@ import os
 import requests
 import json
 import time
+import re
 
 # --- Configuration ---
 # It's recommended to set the API key as an environment variable
@@ -129,7 +130,8 @@ def index():
 def generate_website_json():
     """
     Receives the website description, calls the Gemini API to generate
-    a JSON structure of the website, inspired by a world-class template.
+    a JSON structure, and uses an iterative self-correction loop to ensure
+    the final output is valid.
     """
     data = request.get_json()
     description = data.get('description')
@@ -139,6 +141,9 @@ def generate_website_json():
     if not GEMINI_API_KEY:
         return jsonify({"error": "API key is not configured on the server."}), 500
 
+    api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key={GEMINI_API_KEY}"
+    
+    # Main prompt for generation
     prompt = f"""
     You are an expert web designer creating a JSON structure for a **world-class, single-page website**.
     Your design MUST emulate a modern, responsive portfolio with a dark theme, glowing animated elements, and professional layouts.
@@ -156,64 +161,88 @@ def generate_website_json():
         -   Create an `accentColor` property with the string value "#ec4899".
         -   Create a `special` object with one property inside: `bgGrid` with the string value "true".
     3.  **`structure` ARRAY:** This will be an array of objects. Each object represents a section of the website. Create 3 to 4 relevant sections.
-    4.  **NAVIGATION SECTION (`type: 'nav'`):**
+    4.  **CONTAINER & ALIGNMENT RULE:** Every `section` must have a direct child `column` that acts as a content container. This container column MUST have the styles `maxWidth: "1200px"`, `margin: "0 auto"`, and `padding: "0 2rem"` to ensure content is centered and well-aligned.
+    5.  **NAVIGATION SECTION (`type: 'nav'`):**
         -   This MUST be the first object in the `structure` array.
         -   For its `styles` object, add properties for fixed position, top/left/right of 0, a high zIndex, padding, and a backdropFilter for a glassmorphism effect.
-        -   Its `children` array should contain one `column` object. This column should have flexbox styles to space its children apart.
-        -   The column's children should be a `text` element for the logo and another `column` for navigation `button`s.
-    5.  **HERO SECTION (`type: 'section'`):**
+        -   Its `children` array should contain one `column` (the container) with flexbox styles to space its children apart (`justifyContent: "space-between"`).
+        -   The container's children should be a `text` element for the logo and another `column` for navigation `button`s.
+    6.  **HERO SECTION (`type: 'section'`):**
         -   This MUST be the second object in the `structure` array.
-        -   For its `styles` object, give it a minHeight of "90vh", and use flexbox to center its content both vertically and horizontally. It must have a relative position.
+        -   For its `styles` object, give it a minHeight of "90vh", and use flexbox to center its content. It must have a relative position.
         -   Add a `special` object inside it with one property: `animatedBlobs` with the string value "true".
-        -   Its `children` array should contain one `column` object which contains a profile `image` (with a circular border-radius and a glow-like boxShadow), a main `heading` (use a large, clamped font size), a `text` subheading, and another `column` with two `button`s inside.
-    6.  **OTHER CONTENT SECTIONS (`type: 'section'`):**
-        -   Style these with significant vertical padding.
-        -   To create multi-column card layouts, make the section's child a `column` and give it grid styles, like `display: "grid"`, `gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))"`, and a `gap`.
-        -   Generate relevant `heading`, `text`, and `image` elements for each section based on the user's request.
-    7.  **ALL ELEMENTS:**
-        -   Every object (section, column, element) MUST have a unique string `id`.
+        -   Its main container `column` (see rule 4) should have `textAlign: "center"` and flexbox styles to center its content. It should contain a profile `image` (with a circular border-radius and a glow-like boxShadow), a main `heading` (use a large, clamped font size), a `text` subheading, and another `column` with two `button`s inside.
+    7.  **OTHER CONTENT SECTIONS (`type: 'section'`):**
+        -   Style these with significant vertical padding (e.g., `padding: "6rem 0"`). Text content should default to `textAlign: "left"`.
+        -   To create responsive multi-column card layouts, the section's container column should have a child `column` with grid styles, like `display: "grid"`, `gap: "2rem"`, and `gridTemplateColumns: "1fr"`. Also add responsive styles like `"md:gridTemplateColumns": "repeat(2, 1fr)"` or `"lg:gridTemplateColumns": "repeat(3, 1fr)"`.
+    8.  **ALL ELEMENTS:**
+        -   Every object MUST have a unique string `id`.
         -   Every element MUST have a `type`, `content` (string), and a `styles` object.
-    8.  **JSON VALIDATION RULE:** Before outputting, double-check that every key and every string value is enclosed in double quotes. Ensure there are no trailing commas. The output must be ONLY the raw JSON object and nothing else.
-
-    ---
-    Now, generate the complete and perfectly valid JSON for the user's request: "{description}".
+    9.  **JSON VALIDATION RULE:** Before outputting, double-check that every key and every string value is enclosed in double quotes. Ensure there are no trailing commas. The output must be ONLY the raw JSON object and nothing else.
     """
-
-    api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key={GEMINI_API_KEY}"
+    
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "temperature": 0.8,
-            "topP": 0.95,
-            "maxOutputTokens": 8192,
-            "responseMimeType": "application/json",
-        }
+        "generationConfig": { "responseMimeType": "application/json" }
     }
 
-    try:
-        result = api_call_with_backoff(api_url, headers={'Content-Type': 'application/json'}, payload=payload)
-        response_text = result['candidates'][0]['content']['parts'][0]['text']
-        website_data = json.loads(response_text)
+    last_error = None
+    response_text = ""
+    for attempt in range(3): # Try up to 3 times (1 initial + 2 corrections)
+        try:
+            print(f"--- Generation Attempt {attempt + 1} ---")
+            
+            # 1. GENERATE or CORRECT
+            result = api_call_with_backoff(api_url, headers={'Content-Type': 'application/json'}, payload=payload)
+            
+            # 2. VALIDATE RESPONSE STRUCTURE
+            if not result or not result.get('candidates') or not result['candidates'][0].get('content') or not result['candidates'][0]['content'].get('parts'):
+                raise ValueError("API returned an empty or malformed response structure.")
+            
+            response_text = result['candidates'][0]['content']['parts'][0]['text']
+            if not response_text.strip():
+                 raise ValueError("API returned an empty text part in the response.")
 
-        def traverse_and_process(node):
-            if isinstance(node, dict):
-                if node.get('type') == 'image' and 'content' in node and 'src' not in node:
-                    node['src'] = f"https://placehold.co/600x400/0f172a/e5e7eb?text={node['content'].replace(' ', '+')}"
-                if 'id' not in node:
-                    node['id'] = f"node-{int(time.time() * 10000) + hash(str(node))}"
-                for value in node.values():
-                    traverse_and_process(value)
-            elif isinstance(node, list):
-                for item in node:
-                    traverse_and_process(item)
-        
-        traverse_and_process(website_data)
-        
-        return jsonify(website_data)
+            # 3. CLEAN AND PARSE
+            clean_text = re.sub(r'^```json\s*|\s*```$', '', response_text, flags=re.MULTILINE | re.DOTALL).strip()
+            website_data = json.loads(clean_text)
+            
+            # 4. SUCCESS
+            print("Successfully generated and parsed valid JSON.")
 
-    except Exception as e:
-        print(f"Error during website JSON generation: {e}")
-        return jsonify({"error": f"Failed to generate website structure: {str(e)}"}), 500
+            # --- Post-processing ---
+            def traverse_and_process(node):
+                if isinstance(node, dict):
+                    if 'id' not in node:
+                        node['id'] = f"node-{int(time.time() * 10000) + hash(str(node))}"
+                    if node.get('type') == 'image' and 'content' in node and 'src' not in node:
+                        node['src'] = f"https://placehold.co/600x400/0f172a/e5e7eb?text={node['content'].replace(' ', '+')}"
+                    for value in node.values():
+                        traverse_and_process(value)
+                elif isinstance(node, list):
+                    for item in node:
+                        traverse_and_process(item)
+            
+            traverse_and_process(website_data)
+            return jsonify(website_data)
+
+        except (json.JSONDecodeError, ValueError) as e:
+            last_error = e
+            print(f"Attempt {attempt + 1} failed with error: {e}. Retrying with self-correction.")
+            
+            # Prepare for the next attempt (correction)
+            correction_prompt = f"""
+            The following text is not valid JSON. Please fix any syntax errors (like missing quotes, commas, or brackets) and return only the corrected, valid JSON object. Do not add any commentary or surrounding text.
+            
+            INVALID TEXT:
+            {response_text}
+            """
+            payload['contents'] = [{"parts": [{"text": correction_prompt}]}]
+            time.sleep(1) # Small delay before retrying
+
+    # If all attempts fail
+    print(f"FATAL Error after multiple attempts. Last error: {last_error}")
+    return jsonify({"error": f"Failed to generate valid website structure after multiple attempts. Last error: {str(last_error)}"}), 500
 
 
 @app.route('/preview')
@@ -227,6 +256,7 @@ def preview():
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
             <title>AI Website Editor</title>
             <script src="https://cdn.tailwindcss.com"></script>
+            <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
             <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700;900&family=Poppins:wght@400;700&family=Roboto:wght@400;700&display=swap" rel="stylesheet">
             <style>
                 body { font-family: 'Inter', sans-serif; background-color: #0f172a; color: #e2e8f0; overflow: hidden;}
@@ -234,16 +264,20 @@ def preview():
                 .main-canvas { display: flex; flex-direction: column; background-color: #1e293b; }
                 .properties-panel { background-color: #0f172a; padding: 1rem; overflow-y: auto; border-left: 1px solid #334155; }
                 .top-toolbar { background-color: #1e293b; padding: 0.5rem 1rem; border-bottom: 1px solid #334155; flex-shrink: 0; }
-                .iframe-wrapper { flex-grow: 1; padding: 1.5rem; background-color: #030712; }
+                .iframe-wrapper { flex-grow: 1; padding: 1rem; background-color: #030712; }
                 #editor-frame { width: 100%; height: 100%; border: 1px solid #334155; background-color: white; border-radius: 0.5rem; transition: all 0.3s ease; }
                 .panel-section details { margin-bottom: 1rem; border-radius: 0.5rem; background-color: #1e293b; }
                 .panel-section summary { font-weight: 600; color: #94a3b8; padding: 0.75rem; cursor: pointer; }
-                .panel-section div { padding: 0.75rem; }
+                .panel-section-content { padding: 0.75rem; border-top: 1px solid #334155; }
                 .prop-label { font-size: 0.875rem; color: #cbd5e1; margin-bottom: 0.25rem; display: block; }
                 .prop-input, .prop-select, .prop-textarea { width: 100%; background-color: #334155; border: 1px solid #475569; color: white; border-radius: 0.375rem; padding: 0.5rem; font-size: 0.875rem; }
                 .prop-input[type="color"] { padding: 0.125rem; height: 38px; }
                 .selected-in-frame { outline: 3px solid #38bdf8 !important; outline-offset: 2px; box-shadow: 0 0 20px rgba(56, 189, 248, 0.5); }
                 .danger-btn { background-color: #be123c; color: white; border: none; padding: 0.5rem 1rem; border-radius: 0.375rem; font-weight: 500; cursor: pointer; margin-top: 1rem; text-align: center; display: block; width: 100%; }
+                .toolbar-btn { background: #334155; border: 1px solid #475569; color: #cbd5e1; padding: 0.5rem; border-radius: 0.375rem; transition: all 0.2s; }
+                .toolbar-btn:hover, .toolbar-btn.active { background: #4f46e5; color: white; }
+                .toolbar-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
             </style>
         </head>
         <body>
@@ -251,11 +285,20 @@ def preview():
                 <!-- Main Canvas & Toolbar -->
                 <div class="main-canvas">
                     <div class="top-toolbar flex items-center justify-between">
-                        <div class="flex items-center gap-4">
+                         <div class="flex items-center gap-4">
                             <h2 class="text-lg font-bold text-white">Live Editor</h2>
-                            <a href="/" class="text-sm text-slate-400 hover:text-white transition">← Start Over</a>
+                            <div class="flex items-center gap-2">
+                                <button id="undo-btn" class="toolbar-btn" disabled><i class="fas fa-undo"></i></button>
+                                <button id="redo-btn" class="toolbar-btn" disabled><i class="fas fa-redo"></i></button>
+                            </div>
+                        </div>
+                        <div class="flex items-center gap-2 bg-slate-700 p-1 rounded-lg">
+                            <button id="desktop-view-btn" class="toolbar-btn active"><i class="fas fa-desktop"></i></button>
+                            <button id="tablet-view-btn" class="toolbar-btn"><i class="fas fa-tablet-alt"></i></button>
+                            <button id="mobile-view-btn" class="toolbar-btn"><i class="fas fa-mobile-alt"></i></button>
                         </div>
                         <div class="flex items-center gap-3">
+                           <a href="/" class="text-sm text-slate-400 hover:text-white transition">← Start Over</a>
                            <button id="downloadBtn" class="bg-indigo-600 text-white text-sm font-bold py-2 px-4 rounded-lg hover:bg-indigo-700">Download HTML</button>
                         </div>
                     </div>
@@ -269,18 +312,28 @@ def preview():
             <script>
                 let websiteData = {};
                 let selectedElementId = null;
+                let history = [];
+                let historyIndex = -1;
 
                 document.addEventListener('DOMContentLoaded', () => {
                     const storedData = sessionStorage.getItem('websiteData');
                     if (storedData) {
                         websiteData = JSON.parse(storedData);
+                        updateHistory(websiteData);
                         renderWebsiteInFrame();
                         renderPropertiesPanel();
                     } else {
                         document.body.innerHTML = '<div class="text-center text-white text-2xl p-8">No website data found. Please <a href="/" class="underline">start over</a>.</div>';
                         return;
                     }
+                    
                     document.getElementById('downloadBtn').addEventListener('click', downloadHTML);
+                    document.getElementById('desktop-view-btn').addEventListener('click', () => setDeviceView('100%'));
+                    document.getElementById('tablet-view-btn').addEventListener('click', () => setDeviceView('768px'));
+                    document.getElementById('mobile-view-btn').addEventListener('click', () => setDeviceView('420px'));
+                    document.getElementById('undo-btn').addEventListener('click', undo);
+                    document.getElementById('redo-btn').addEventListener('click', redo);
+
                 });
                 
                 function findNodeAndParent(id, nodes = websiteData.structure, parent = null) {
@@ -301,41 +354,60 @@ def preview():
 
                     function buildHtmlAndStyles(nodes) {
                         let html = '';
-                        nodes.forEach(node => {
-                            const tag = { nav: 'nav', section: 'section', column: 'div', heading: 'h2', text: 'p', button: 'button', image: 'img' }[node.type] || 'div';
+                        let styles = '';
+
+                        function processNode(node) {
+                            const tag = { nav: 'nav', section: 'section', column: 'div', heading: 'h2', text: 'p', button: 'button', image: 'img', divider: 'hr', video: 'div' }[node.type] || 'div';
                             
-                            let inlineStyle = '';
+                            let baseStyle = '';
+                            let mdStyle = '';
+                            let lgStyle = '';
+                            
                             if(node.styles) {
                                 for (const [key, value] of Object.entries(node.styles)) {
                                     const cssKey = key.replace(/[A-Z]/g, letter => `-${letter.toLowerCase()}`);
-                                    inlineStyle += `${cssKey}: ${value}; `;
+                                    if(key.startsWith('md:')) {
+                                        mdStyle += `${cssKey.substring(3)}: ${value}; `;
+                                    } else if (key.startsWith('lg:')) {
+                                        lgStyle += `${cssKey.substring(3)}: ${value}; `;
+                                    } else {
+                                        baseStyle += `${cssKey}: ${value}; `;
+                                    }
                                 }
+                            }
+                            styles += `#${node.id} { ${baseStyle} }\\n`;
+                            if(mdStyle) styles += `@media (min-width: 768px) { #${node.id} { ${mdStyle} } }\\n`;
+                            if(lgStyle) styles += `@media (min-width: 1024px) { #${node.id} { ${lgStyle} } }\\n`;
+                            
+                            html += `<${tag} id="${node.id}" class="editable-element">`;
+
+                            if (node.special?.animatedBlobs === "true") {
+                                html += `<div style="position:absolute; z-index: -1; top:-8rem; left:-8rem; width:16rem; height:16rem; background-color:${globalStyles.primaryColor}; border-radius:9999px; mix-blend-mode:lighten; filter:blur(3rem); opacity:0.2; animation:blob-anim 10s infinite;"></div><div style="position:absolute; z-index: -1; bottom:-8rem; right:-8rem; width:16rem; height:16rem; background-color:${globalStyles.accentColor}; border-radius:9999px; mix-blend-mode:lighten; filter:blur(3rem); opacity:0.2; animation:blob-anim 10s infinite reverse;"></div>`;
                             }
                             
-                            let specialHtml = '';
-                            if(node.special?.animatedBlobs === "true") {
-                                specialHtml += `
-                                <div style="position:absolute; z-index: -1; top:-8rem; left:-8rem; width:16rem; height:16rem; background-color:${globalStyles.primaryColor}; border-radius:9999px; mix-blend-mode:lighten; filter:blur(3rem); opacity:0.2; animation:blob-anim 10s infinite;"></div>
-                                <div style="position:absolute; z-index: -1; bottom:-8rem; right:-8rem; width:16rem; height:16rem; background-color:${globalStyles.accentColor}; border-radius:9999px; mix-blend-mode:lighten; filter:blur(3rem); opacity:0.2; animation:blob-anim 10s infinite reverse;"></div>
-                                `;
+                            switch(node.type) {
+                                case 'image':
+                                    html += `<img src="${node.src}" alt="${node.content || ''}" style="width:100%; height:auto; display: block;">`
+                                    break;
+                                case 'video':
+                                    const videoId = node.src.split('v=')[1]?.split('&')[0] || node.src.split('/').pop();
+                                    html += `<iframe src="https://www.youtube.com/embed/${videoId}" style="position:absolute; top:0; left:0; width:100%; height:100%;" frameborder="0" allowfullscreen></iframe>`;
+                                    break;
+                                case 'divider':
+                                    break;
+                                default:
+                                    html += node.content || '';
+                                    if (node.children) {
+                                        node.children.forEach(child => processNode(child));
+                                    }
                             }
-
-                            if (node.type !== 'image') {
-                                html += `<${tag} id="${node.id}" style="${inlineStyle}" class="editable-element">`;
-                                html += specialHtml;
-                                html += node.content || '';
-                                if (node.children) {
-                                    html += buildHtmlAndStyles(node.children);
-                                }
-                                html += `</${tag}>`;
-                            } else {
-                                html += `<img id="${node.id}" src="${node.src}" alt="${node.content || ''}" style="${inlineStyle}" class="editable-element">`
-                            }
-                        });
-                        return html;
+                            html += `</${tag}>`;
+                        }
+                        nodes.forEach(processNode);
+                        return { html, styles };
                     }
 
-                    const bodyHtml = buildHtmlAndStyles(structure);
+                    const { html: bodyHtml, styles: dynamicStyles } = buildHtmlAndStyles(structure);
 
                     const finalHtml = `
                     <html><head>
@@ -343,19 +415,16 @@ def preview():
                         <link href="https://fonts.googleapis.com/css2?family=${googleFont}:wght@400;500;700;900&display=swap" rel="stylesheet">
                         <style>
                             html { scroll-behavior: smooth; }
-                            body { 
-                                font-family: ${globalStyles.fontFamily}; 
-                                background-color: ${globalStyles.backgroundColor}; 
-                                color: ${globalStyles.textColor}; 
-                                margin: 0; padding: 0; 
+                            body { font-family: ${globalStyles.fontFamily}; background-color: ${globalStyles.backgroundColor}; color: ${globalStyles.textColor}; margin: 0; padding: 0; 
                                 ${globalStyles.special?.bgGrid === "true" ? `background-image: linear-gradient(to right, rgba(200, 200, 200, 0.05) 1px, transparent 1px), linear-gradient(to bottom, rgba(200, 200, 200, 0.05) 1px, transparent 1px); background-size: 2rem 2rem;` : ''}
                             }
                             .editable-element { cursor: pointer; transition: outline 0.2s; position: relative; }
                             [contenteditable]:focus, [contenteditable]:hover { outline: 2px dashed #38bdf8 !important; }
-                            img.editable-element:hover { outline: 2px dashed #38bdf8; }
+                            .editable-element:hover { outline: 2px dashed #38bdf8; }
                             @keyframes blob-anim { 50% { transform: scale(1.2) translate(20px, -30px); } }
+                            ${dynamicStyles}
                         </style>
-                    </head><body><main class="mx-auto">${bodyHtml}</main></body></html>`;
+                    </head><body><main>${bodyHtml}</main></body></html>`;
 
                     frame.srcdoc = finalHtml;
                     frame.onload = () => {
@@ -380,44 +449,31 @@ def preview():
                     const panel = document.getElementById('properties-panel');
                     const result = selectedElementId ? findNodeAndParent(selectedElementId) : null;
                     const selectedElement = result ? result.node : null;
-
                     let content = '<div class="p-2">';
 
                     if (selectedElement) {
                         content += `<h2 class="text-lg font-bold mb-4 text-white">${selectedElement.type.charAt(0).toUpperCase() + selectedElement.type.slice(1)} Properties</h2><div class="space-y-4">`;
                         
-                        // Content Editing
-                        if ('content' in selectedElement) {
+                        if (['heading', 'text', 'button'].includes(selectedElement.type)) {
                            content += createTextareaControl('Content', 'content', selectedElement.content || '');
                         }
-                        if (selectedElement.type === 'image') {
-                           content += createTextControl('Image Source (URL)', 'src', selectedElement.src || '');
+                        if (selectedElement.type === 'image' || selectedElement.type === 'video') {
+                           content += createTextControl('Source URL', 'src', selectedElement.src || '');
                         }
                         
-                        // Styling
-                        if ('styles' in selectedElement) {
-                            content += `<details open class="panel-section"><summary>Styling</summary><div>`;
-                            for(const styleProp in selectedElement.styles) {
-                                if(styleProp.toLowerCase().includes('color')) {
-                                    content += createColorControl(styleProp, `styles.${styleProp}`, selectedElement.styles[styleProp]);
-                                } else {
-                                    content += createTextControl(styleProp, `styles.${styleProp}`, selectedElement.styles[styleProp]);
-                                }
-                            }
-                            content += `</div></details>`;
-                        }
+                        content += createStyleControls(selectedElement);
 
-                        // Add Child Element
                         if (selectedElement.type === 'column') {
-                           content += `<details class="panel-section"><summary>Add Element</summary><div><div class="grid grid-cols-2 gap-2">
+                           content += `<details class="panel-section"><summary>Add Element</summary><div class="panel-section-content grid grid-cols-2 gap-2">
                            <button class="prop-input" data-action="addChild" data-child-type="heading">Heading</button>
                            <button class="prop-input" data-action="addChild" data-child-type="text">Text</button>
                            <button class="prop-input" data-action="addChild" data-child-type="button">Button</button>
                            <button class="prop-input" data-action="addChild" data-child-type="image">Image</button>
-                           </div></div></details>`;
+                           <button class="prop-input" data-action="addChild" data-child-type="divider">Divider</button>
+                           <button class="prop-input" data-action="addChild" data-child-type="video">Video</button>
+                           </div></details>`;
                         }
                         
-                        // Delete Element
                         content += `<button class="danger-btn" data-action="delete">Delete Element</button>`;
                         content += `</div>`;
                     } else {
@@ -434,8 +490,42 @@ def preview():
                     addPanelEventListeners();
                 }
 
-                function createTextareaControl(label, key, value) { return `<div><label class="prop-label">${label}</label><textarea class="prop-textarea" data-key="${key}" rows="4">${value}</textarea></div>`; }
-                function createTextControl(label, key, value) { return `<div><label class="prop-label">${label}</label><input type="text" class="prop-input" data-key="${key}" value="${value || ''}"></div>`; }
+                function createStyleControls(element) {
+                    let html = '';
+                    const styles = element.styles || {};
+                    const groups = {
+                        Layout: ['display', 'flexDirection', 'alignItems', 'justifyContent', 'gap', 'gridTemplateColumns'],
+                        Spacing: ['padding', 'margin'],
+                        Typography: ['color', 'fontSize', 'fontWeight', 'textAlign', 'lineHeight'],
+                        Background: ['backgroundColor', 'backgroundImage'],
+                        Borders: ['borderRadius', 'border', 'boxShadow'],
+                    };
+
+                    for(const [groupName, baseProps] of Object.entries(groups)) {
+                        let groupHtml = '';
+                        baseProps.forEach(prop => {
+                             groupHtml += createResponsiveTextControl(prop, 'styles', styles);
+                        });
+                         html += `<details class="panel-section"><summary>${groupName}</summary><div class="panel-section-content space-y-3">${groupHtml}</div></details>`;
+                    }
+                    return html;
+                }
+
+                function createResponsiveTextControl(label, keyPrefix, styles) {
+                    const baseValue = styles[label] || '';
+                    const mdValue = styles[`md:${label}`] || '';
+                    const lgValue = styles[`lg:${label}`] || '';
+                    return `<div>
+                                <label class="prop-label">${label}</label>
+                                <div class="grid grid-cols-3 gap-2">
+                                    <input type="text" class="prop-input" placeholder="All" data-key="${keyPrefix}.${label}" value="${baseValue}">
+                                    <input type="text" class="prop-input" placeholder="md" data-key="${keyPrefix}.md:${label}" value="${mdValue}">
+                                    <input type="text" class="prop-input" placeholder="lg" data-key="${keyPrefix}.lg:${label}" value="${lgValue}">
+                                </div>
+                            </div>`;
+                }
+
+                function createTextareaControl(label, key, value) { return `<div><label class="prop-label">${label}</label><textarea class="prop-textarea" data-key="${key}" rows="3">${value}</textarea></div>`; }
                 function createColorControl(label, key, value) { return `<div><label class="prop-label">${label}</label><div class="flex items-center gap-2"><input type="color" class="prop-input w-10 h-10 p-1" data-key="${key}" value="${value || '#ffffff'}"><input type="text" class="prop-input" data-key="${key}" value="${value || ''}"></div></div>`; }
                 function createFontSelect(label, key, value) {
                     const fonts = ["'Inter', sans-serif", "'Poppins', sans-serif", "'Roboto', sans-serif"];
@@ -446,6 +536,7 @@ def preview():
                 function addPanelEventListeners() {
                     document.querySelectorAll('#properties-panel [data-key]').forEach(input => {
                         input.addEventListener('input', handlePropertyChange);
+                        input.addEventListener('change', handlePropertyChange); // For color pickers
                     });
                      document.querySelectorAll('#properties-panel [data-action]').forEach(button => {
                         button.addEventListener('click', handleAction);
@@ -454,7 +545,7 @@ def preview():
                 
                 function handlePropertyChange(e) {
                     const keyPath = e.target.dataset.key;
-                    const value = e.target.value;
+                    let value = e.target.value;
                     
                     const setProperty = (obj, path, val) => {
                         const keys = path.split('.');
@@ -463,16 +554,24 @@ def preview():
                             if(o[k] === undefined) o[k] = {};
                             return o[k];
                         }, obj);
-                        lastObj[lastKey] = val;
+                        
+                        if (val.trim() === '') {
+                           delete lastObj[lastKey];
+                        } else {
+                           lastObj[lastKey] = val;
+                        }
                     };
                     
                     if (keyPath.startsWith('globalStyles')) {
                         setProperty(websiteData, keyPath, value);
                     } else if (selectedElementId) {
                         const { node } = findNodeAndParent(selectedElementId);
-                        if (node) setProperty(node, keyPath, value);
+                        if (node) {
+                            if (!node.styles) node.styles = {};
+                            setProperty(node, keyPath, value);
+                        }
                     }
-                    saveAndRerender();
+                    saveAndRerender(true);
                 }
 
                 function handleAction(e) {
@@ -488,11 +587,11 @@ def preview():
 
                 function deleteSelectedElement() {
                     if (!selectedElementId) return;
-                    const { node, parent } = findNodeAndParent(selectedElementId);
+                    const { parent } = findNodeAndParent(selectedElementId);
                     if (!parent || !parent.children) return;
                     parent.children = parent.children.filter(child => child.id !== selectedElementId);
                     selectedElementId = null;
-                    saveAndRerender();
+                    saveAndRerender(true);
                     renderPropertiesPanel();
                 }
 
@@ -502,16 +601,17 @@ def preview():
                     if (node && node.type === 'column') {
                         if(!node.children) node.children = [];
                         const newElement = {
-                            id: `el-${Date.now()}`,
-                            type: type,
-                            content: `New ${type}`,
-                            styles: type === 'button' ? { padding: '0.5rem 1rem', background: websiteData.globalStyles.primaryColor, borderRadius: '0.5rem'} : {}
+                            id: `el-${Date.now()}`, type: type, content: `New ${type}`,
+                            styles: { padding: '1rem' }
                         };
-                         if (type === 'image') {
-                           newElement.src = 'https://placehold.co/600x400/0f172a/e5e7eb?text=New+Image'
-                        }
+                         if (type === 'image') newElement.src = 'https://placehold.co/600x400/0f172a/e5e7eb?text=New+Image'
+                         if (type === 'divider') newElement.styles = { height: '1px', background: '#334155', margin: '2rem 0'};
+                         if (type === 'video') {
+                            newElement.src = 'https://www.youtube.com/watch?v=dQw4w9WgXcQ';
+                            newElement.styles = { position: 'relative', paddingBottom: '56.25%', height: '0'};
+                         }
                         node.children.push(newElement);
-                        saveAndRerender();
+                        saveAndRerender(true);
                     } else {
                         alert("You can only add new elements to a 'column' type.")
                     }
@@ -530,12 +630,15 @@ def preview():
                         const { node } = findNodeAndParent(id);
                         if(node) {
                             node.content = newContent;
-                            saveAndRerender();
+                            saveAndRerender(true);
                         }
                     }
                 });
                 
-                function saveAndRerender() {
+                function saveAndRerender(addToHistory = false) {
+                    if (addToHistory) {
+                        updateHistory(websiteData);
+                    }
                     sessionStorage.setItem('websiteData', JSON.stringify(websiteData));
                     renderWebsiteInFrame();
                      setTimeout(() => {
@@ -545,6 +648,48 @@ def preview():
                              if(selectedEl) selectedEl.classList.add('selected-in-frame');
                         }
                     }, 150);
+                }
+
+                function updateHistory(data) {
+                    history = history.slice(0, historyIndex + 1);
+                    history.push(JSON.parse(JSON.stringify(data)));
+                    historyIndex++;
+                    updateUndoRedoButtons();
+                }
+
+                function undo() {
+                    if (historyIndex > 0) {
+                        historyIndex--;
+                        websiteData = JSON.parse(JSON.stringify(history[historyIndex]));
+                        saveAndRerender(false);
+                        renderPropertiesPanel();
+                        updateUndoRedoButtons();
+                    }
+                }
+
+                function redo() {
+                    if (historyIndex < history.length - 1) {
+                        historyIndex++;
+                        websiteData = JSON.parse(JSON.stringify(history[historyIndex]));
+                        saveAndRerender(false);
+                        renderPropertiesPanel();
+                        updateUndoRedoButtons();
+                    }
+                }
+                
+                function updateUndoRedoButtons(){
+                    document.getElementById('undo-btn').disabled = historyIndex <= 0;
+                    document.getElementById('redo-btn').disabled = historyIndex >= history.length - 1;
+                }
+
+                function setDeviceView(width) {
+                    document.getElementById('editor-frame').style.width = width;
+                    ['desktop', 'tablet', 'mobile'].forEach(v => {
+                        document.getElementById(`${v}-view-btn`).classList.remove('active');
+                    });
+                    if(width === '100%') document.getElementById('desktop-view-btn').classList.add('active');
+                    else if(width === '768px') document.getElementById('tablet-view-btn').classList.add('active');
+                    else document.getElementById('mobile-view-btn').classList.add('active');
                 }
 
                 function downloadHTML() {
